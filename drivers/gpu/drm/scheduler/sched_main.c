@@ -828,7 +828,7 @@ static int drm_sched_main(void *param)
 					  r);
 			dma_fence_put(fence);
 		} else {
-			if (IS_ERR(fence))
+			if ((fence != NULL) && IS_ERR(fence))
 				dma_fence_set_error(&s_fence->finished, PTR_ERR(fence));
 
 			drm_sched_job_done(sched_job);
