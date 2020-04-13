@@ -2012,7 +2012,7 @@ static int vc6_hvs_hw_init(struct vc4_hvs *hvs)
 static int vc4_hvs_cob_init(struct vc4_hvs *hvs)
 {
 	struct vc4_dev *vc4 = hvs->vc4;
-	u32 reg, top, base;
+	u32 reg, top, base = 0;
 
 	/*
 	 * Recompute Composite Output Buffer (COB) allocations for the
