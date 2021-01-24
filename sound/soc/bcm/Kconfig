@@ -307,6 +307,12 @@ config SND_BCM2708_SOC_FE_PI_AUDIO
 	help
 	  Say Y or M if you want to add support for Fe-Pi-Audio.
 
+config SND_BCM2708_SOC_I2SMIC_RPI
+        tristate "Support for I2S MEMS Microphone"
+        depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+        help
+         Say Y or M if you want to add support for I2S MEMS Microphone.
+
 config SND_PISOUND
 	tristate "Support for Blokas Labs pisound"
 	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
