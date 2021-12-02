@@ -592,9 +592,8 @@ error:
 	return NULL;
 }
 
-static bool zswap_try_pool_create(void)
+static __init struct zswap_pool *__zswap_pool_create_fallback(void)
 {
-	struct zswap_pool *pool;
 	bool has_comp, has_zpool;
 
 	has_comp = crypto_has_comp(zswap_compressor, 0, 0);
@@ -630,21 +629,9 @@ static bool zswap_try_pool_create(void)
 	}
 
 	if (!has_comp || !has_zpool)
-		return false;
+		return NULL;
 
-	pool = zswap_pool_create(zswap_zpool_type, zswap_compressor);
-
-	if (pool) {
-		pr_info("loaded using pool %s/%s\n", pool->tfm_name,
-			zpool_get_type(pool->zpool));
-		list_add(&pool->list, &zswap_pools);
-		zswap_has_pool = true;
-	} else {
-		pr_err("pool creation failed\n");
-		zswap_enabled = false;
-	}
-
-	return zswap_enabled;
+	return zswap_pool_create(zswap_zpool_type, zswap_compressor);
 }
 
 static void zswap_pool_destroy(struct zswap_pool *pool)
@@ -817,19 +804,16 @@ static int zswap_zpool_param_set(const char *val,
 static int zswap_enabled_param_set(const char *val,
 				   const struct kernel_param *kp)
 {
-	int ret;
-
 	if (zswap_init_failed) {
 		pr_err("can't enable, initialization failed\n");
 		return -ENODEV;
 	}
+	if (!zswap_has_pool && zswap_init_started) {
+		pr_err("can't enable, no pool configured\n");
+		return -ENODEV;
+	}
 
-	ret = param_set_bool(val, kp);
-	if (!ret && zswap_enabled && zswap_init_started && !zswap_has_pool)
-		if (!zswap_try_pool_create())
-			ret = -ENODEV;
-
-	return ret;
+	return param_set_bool(val, kp);
 }
 
 /*********************************
@@ -1330,6 +1314,7 @@ static void __exit zswap_debugfs_exit(void) { }
 **********************************/
 static int __init init_zswap(void)
 {
+	struct zswap_pool *pool;
 	int ret;
 
 	zswap_init_started = true;
@@ -1353,19 +1338,29 @@ static int __init init_zswap(void)
 	if (ret)
 		goto hp_fail;
 
+	pool = __zswap_pool_create_fallback();
+	if (pool) {
+		pr_info("loaded using pool %s/%s\n", pool->tfm_name,
+			zpool_get_type(pool->zpool));
+		list_add(&pool->list, &zswap_pools);
+		zswap_has_pool = true;
+	} else {
+		pr_err("pool creation failed\n");
+		zswap_enabled = false;
+	}
+
 	shrink_wq = create_workqueue("zswap-shrink");
 	if (!shrink_wq)
-		goto hp_fail;
+		goto fallback_fail;
 
 	frontswap_register_ops(&zswap_frontswap_ops);
 	if (zswap_debugfs_init())
 		pr_warn("debugfs initialization failed\n");
-
-	if (zswap_enabled)
-		zswap_try_pool_create();
-
 	return 0;
 
+fallback_fail:
+	if (pool)
+		zswap_pool_destroy(pool);
 hp_fail:
 	cpuhp_remove_state(CPUHP_MM_ZSWP_MEM_PREPARE);
 dstmem_fail:
