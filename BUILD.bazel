@@ -735,6 +735,31 @@ copy_to_dist_dir(
     flat = True,
 )
 
+
+kernel_build(
+    name = "arpi5",
+    srcs = ["//common:kernel_aarch64_sources"],
+    outs = [
+        "arch/arm64/boot/Image.gz",
+        "arch/arm64/boot/dts/broadcom/bcm2712-rpi-5-b.dtb",
+        "arch/arm64/boot/dts/overlays/vc4-kms-v3d-pi5.dtbo",
+    ],
+    build_config = "build.config.arpi5",
+    make_goals = [
+        "Image.gz",
+        "broadcom/bcm2712-rpi-5-b.dtb",
+        "overlays/vc4-kms-v3d-pi5.dtbo",
+    ],
+)
+
+copy_to_dist_dir(
+    name = "arpi5_dist",
+    data = [":arpi5"],
+    dist_dir = "out/arpi5/dist",
+    flat = True,
+)
+
+
 # allmodconfig build tests.
 # These are build tests only, so:
 # - outs are intentionally set to empty to not copy anything to DIST_DIR
