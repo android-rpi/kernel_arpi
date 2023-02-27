@@ -6,6 +6,7 @@
  */
 
 #include <linux/context_tracking.h>
+#include <linux/kasan.h>
 #include <linux/linkage.h>
 #include <linux/lockdep.h>
 #include <linux/ptrace.h>
@@ -24,6 +25,8 @@
 #include <asm/stacktrace.h>
 #include <asm/sysreg.h>
 #include <asm/system_misc.h>
+
+#include <trace/hooks/traps.h>
 
 /*
  * Handle IRQ/context state management when entering from kernel mode.
@@ -55,6 +58,7 @@ static void noinstr enter_from_kernel_mode(struct pt_regs *regs)
 {
 	__enter_from_kernel_mode(regs);
 	mte_check_tfsr_entry();
+	mte_disable_tco_entry(current);
 }
 
 /*
@@ -102,6 +106,7 @@ static __always_inline void __enter_from_user_mode(void)
 	CT_WARN_ON(ct_state() != CONTEXT_USER);
 	user_exit_irqoff();
 	trace_hardirqs_off_finish();
+	mte_disable_tco_entry(current);
 }
 
 static __always_inline void enter_from_user_mode(struct pt_regs *regs)
@@ -283,6 +288,7 @@ static void noinstr __panic_unhandled(struct pt_regs *regs, const char *vector,
 		vector, smp_processor_id(), esr,
 		esr_get_class_string(esr));
 
+	trace_android_rvh_panic_unhandled(regs, vector, esr);
 	__show_regs(regs);
 	panic("Unhandled exception");
 }
@@ -517,6 +523,14 @@ static void noinstr el0_sve_acc(struct pt_regs *regs, unsigned long esr)
 	exit_to_user_mode(regs);
 }
 
+static void noinstr el0_sme_acc(struct pt_regs *regs, unsigned long esr)
+{
+	enter_from_user_mode(regs);
+	local_daif_restore(DAIF_PROCCTX);
+	do_sme_acc(esr, regs);
+	exit_to_user_mode(regs);
+}
+
 static void noinstr el0_fpsimd_exc(struct pt_regs *regs, unsigned long esr)
 {
 	enter_from_user_mode(regs);
@@ -624,6 +638,9 @@ asmlinkage void noinstr el0t_64_sync_handler(struct pt_regs *regs)
 		break;
 	case ESR_ELx_EC_SVE:
 		el0_sve_acc(regs, esr);
+		break;
+	case ESR_ELx_EC_SME:
+		el0_sme_acc(regs, esr);
 		break;
 	case ESR_ELx_EC_FP_EXC64:
 		el0_fpsimd_exc(regs, esr);

@@ -414,7 +414,7 @@ kvm_run' (see below).
 -----------------
 
 :Capability: basic
-:Architectures: all except ARM, arm64
+:Architectures: all except arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_regs (out)
 :Returns: 0 on success, -1 on error
@@ -447,7 +447,7 @@ Reads the general purpose registers from the vcpu.
 -----------------
 
 :Capability: basic
-:Architectures: all except ARM, arm64
+:Architectures: all except arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_regs (in)
 :Returns: 0 on success, -1 on error
@@ -804,7 +804,7 @@ Writes the floating point state to the vcpu.
 -----------------------
 
 :Capability: KVM_CAP_IRQCHIP, KVM_CAP_S390_IRQCHIP (s390)
-:Architectures: x86, ARM, arm64, s390
+:Architectures: x86, arm64, s390
 :Type: vm ioctl
 :Parameters: none
 :Returns: 0 on success, -1 on error
@@ -813,7 +813,7 @@ Creates an interrupt controller model in the kernel.
 On x86, creates a virtual ioapic, a virtual PIC (two PICs, nested), and sets up
 future vcpus to have a local APIC.  IRQ routing for GSIs 0-15 is set to both
 PIC and IOAPIC; GSI 16-23 only go to the IOAPIC.
-On ARM/arm64, a GICv2 is created. Any other GIC versions require the usage of
+On arm64, a GICv2 is created. Any other GIC versions require the usage of
 KVM_CREATE_DEVICE, which also supports creating a GICv2.  Using
 KVM_CREATE_DEVICE is preferred over KVM_CREATE_IRQCHIP for GICv2.
 On s390, a dummy irq routing table is created.
@@ -826,7 +826,7 @@ before KVM_CREATE_IRQCHIP can be used.
 -----------------
 
 :Capability: KVM_CAP_IRQCHIP
-:Architectures: x86, arm, arm64
+:Architectures: x86, arm64
 :Type: vm ioctl
 :Parameters: struct kvm_irq_level
 :Returns: 0 on success, -1 on error
@@ -850,7 +850,7 @@ capability is present (or unless it is not using the in-kernel irqchip,
 of course).
 
 
-ARM/arm64 can signal an interrupt either at the CPU level, or at the
+arm64 can signal an interrupt either at the CPU level, or at the
 in-kernel irqchip (GIC), and for in-kernel irqchip can tell the GIC to
 use PPIs designated for specific cpus.  The irq field is interpreted
 like this::
@@ -876,7 +876,7 @@ When KVM_CAP_ARM_IRQ_LINE_LAYOUT_2 is supported, the target vcpu is
 identified as (256 * vcpu2_index + vcpu_index). Otherwise, vcpu2_index
 must be zero.
 
-Note that on arm/arm64, the KVM_CAP_IRQCHIP capability only conditions
+Note that on arm64, the KVM_CAP_IRQCHIP capability only conditions
 injection of interrupts for the in-kernel irqchip. KVM_IRQ_LINE can always
 be used for a userspace interrupt controller.
 
@@ -1037,7 +1037,7 @@ such as migration.
 
 :Capability: KVM_CAP_VCPU_EVENTS
 :Extended by: KVM_CAP_INTR_SHADOW
-:Architectures: x86, arm, arm64
+:Architectures: x86, arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_vcpu_event (out)
 :Returns: 0 on success, -1 on error
@@ -1096,8 +1096,8 @@ The following bits are defined in the flags field:
   fields contain a valid state. This bit will be set whenever
   KVM_CAP_EXCEPTION_PAYLOAD is enabled.
 
-ARM/ARM64:
-^^^^^^^^^^
+ARM64:
+^^^^^^
 
 If the guest accesses a device that is being emulated by the host kernel in
 such a way that a real device would generate a physical SError, KVM may make
@@ -1156,7 +1156,7 @@ directly to the virtual CPU).
 
 :Capability: KVM_CAP_VCPU_EVENTS
 :Extended by: KVM_CAP_INTR_SHADOW
-:Architectures: x86, arm, arm64
+:Architectures: x86, arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_vcpu_event (in)
 :Returns: 0 on success, -1 on error
@@ -1191,8 +1191,8 @@ can be set in the flags field to signal that the
 exception_has_payload, exception_payload, and exception.pending fields
 contain a valid state and shall be written into the VCPU.
 
-ARM/ARM64:
-^^^^^^^^^^
+ARM64:
+^^^^^^
 
 User space may need to inject several types of events to the guest.
 
@@ -1399,7 +1399,7 @@ for vm-wide capabilities.
 ---------------------
 
 :Capability: KVM_CAP_MP_STATE
-:Architectures: x86, s390, arm, arm64
+:Architectures: x86, s390, arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_mp_state (out)
 :Returns: 0 on success; -1 on error
@@ -1416,7 +1416,7 @@ uniprocessor guests).
 Possible values are:
 
    ==========================    ===============================================
-   KVM_MP_STATE_RUNNABLE         the vcpu is currently running [x86,arm/arm64]
+   KVM_MP_STATE_RUNNABLE         the vcpu is currently running [x86,arm64]
    KVM_MP_STATE_UNINITIALIZED    the vcpu is an application processor (AP)
                                  which has not yet received an INIT signal [x86]
    KVM_MP_STATE_INIT_RECEIVED    the vcpu has received an INIT signal, and is
@@ -1425,29 +1425,52 @@ Possible values are:
                                  is waiting for an interrupt [x86]
    KVM_MP_STATE_SIPI_RECEIVED    the vcpu has just received a SIPI (vector
                                  accessible via KVM_GET_VCPU_EVENTS) [x86]
-   KVM_MP_STATE_STOPPED          the vcpu is stopped [s390,arm/arm64]
+   KVM_MP_STATE_STOPPED          the vcpu is stopped [s390,arm64]
    KVM_MP_STATE_CHECK_STOP       the vcpu is in a special error state [s390]
    KVM_MP_STATE_OPERATING        the vcpu is operating (running or halted)
                                  [s390]
    KVM_MP_STATE_LOAD             the vcpu is in a special load/startup state
                                  [s390]
+   KVM_MP_STATE_SUSPENDED        the vcpu is in a suspend state and is waiting
+                                 for a wakeup event [arm64]
    ==========================    ===============================================
 
 On x86, this ioctl is only useful after KVM_CREATE_IRQCHIP. Without an
 in-kernel irqchip, the multiprocessing state must be maintained by userspace on
 these architectures.
 
-For arm/arm64:
-^^^^^^^^^^^^^^
+For arm64:
+^^^^^^^^^^
 
-The only states that are valid are KVM_MP_STATE_STOPPED and
-KVM_MP_STATE_RUNNABLE which reflect if the vcpu is paused or not.
+If a vCPU is in the KVM_MP_STATE_SUSPENDED state, KVM will emulate the
+architectural execution of a WFI instruction.
+
+If a wakeup event is recognized, KVM will exit to userspace with a
+KVM_SYSTEM_EVENT exit, where the event type is KVM_SYSTEM_EVENT_WAKEUP. If
+userspace wants to honor the wakeup, it must set the vCPU's MP state to
+KVM_MP_STATE_RUNNABLE. If it does not, KVM will continue to await a wakeup
+event in subsequent calls to KVM_RUN.
+
+.. warning::
+
+     If userspace intends to keep the vCPU in a SUSPENDED state, it is
+     strongly recommended that userspace take action to suppress the
+     wakeup event (such as masking an interrupt). Otherwise, subsequent
+     calls to KVM_RUN will immediately exit with a KVM_SYSTEM_EVENT_WAKEUP
+     event and inadvertently waste CPU cycles.
+
+     Additionally, if userspace takes action to suppress a wakeup event,
+     it is strongly recommended that it also restores the vCPU to its
+     original state when the vCPU is made RUNNABLE again. For example,
+     if userspace masked a pending interrupt to suppress the wakeup,
+     the interrupt should be unmasked before returning control to the
+     guest.
 
 4.39 KVM_SET_MP_STATE
 ---------------------
 
 :Capability: KVM_CAP_MP_STATE
-:Architectures: x86, s390, arm, arm64
+:Architectures: x86, s390, arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_mp_state (in)
 :Returns: 0 on success; -1 on error
@@ -1459,8 +1482,8 @@ On x86, this ioctl is only useful after KVM_CREATE_IRQCHIP. Without an
 in-kernel irqchip, the multiprocessing state must be maintained by userspace on
 these architectures.
 
-For arm/arm64:
-^^^^^^^^^^^^^^
+For arm64:
+^^^^^^^^^^
 
 The only states that are valid are KVM_MP_STATE_STOPPED and
 KVM_MP_STATE_RUNNABLE which reflect if the vcpu should be paused or not.
@@ -1715,14 +1738,14 @@ The flags bitmap is defined as::
 ------------------------
 
 :Capability: KVM_CAP_IRQ_ROUTING
-:Architectures: x86 s390 arm arm64
+:Architectures: x86 s390 arm64
 :Type: vm ioctl
 :Parameters: struct kvm_irq_routing (in)
 :Returns: 0 on success, -1 on error
 
 Sets the GSI routing table entries, overwriting any previously set entries.
 
-On arm/arm64, GSI routing has the following limitation:
+On arm64, GSI routing has the following limitation:
 
 - GSI routing does not apply to KVM_IRQ_LINE but only to KVM_IRQFD.
 
@@ -2526,6 +2549,24 @@ EINVAL.
 After the vcpu's SVE configuration is finalized, further attempts to
 write this register will fail with EPERM.
 
+arm64 bitmap feature firmware pseudo-registers have the following bit pattern::
+
+  0x6030 0000 0016 <regno:16>
+
+The bitmap feature firmware registers exposes the hypercall services that
+are available for userspace to configure. The set bits corresponds to the
+services that are available for the guests to access. By default, KVM
+sets all the supported bits during VM initialization. The userspace can
+discover the available services via KVM_GET_ONE_REG, and write back the
+bitmap corresponding to the features that it wishes guests to see via
+KVM_SET_ONE_REG.
+
+Note: These registers are immutable once any of the vCPUs of the VM has
+run at least once. A KVM_SET_ONE_REG in such a scenario will return
+a -EBUSY to userspace.
+
+(See Documentation/virt/kvm/arm/hypercalls.rst for more details.)
+
 
 MIPS registers are mapped using the lower 32 bits.  The upper 16 of that is
 the register group type:
@@ -2636,7 +2677,7 @@ after pausing the vcpu, but before it is resumed.
 -------------------
 
 :Capability: KVM_CAP_SIGNAL_MSI
-:Architectures: x86 arm arm64
+:Architectures: x86 arm64
 :Type: vm ioctl
 :Parameters: struct kvm_msi (in)
 :Returns: >0 on delivery, 0 if guest blocked the MSI, and -1 on error
@@ -2824,7 +2865,7 @@ into the hash PTE second double word).
 --------------
 
 :Capability: KVM_CAP_IRQFD
-:Architectures: x86 s390 arm arm64
+:Architectures: x86 s390 arm64
 :Type: vm ioctl
 :Parameters: struct kvm_irqfd (in)
 :Returns: 0 on success, -1 on error
@@ -2850,7 +2891,7 @@ Note that closing the resamplefd is not sufficient to disable the
 irqfd.  The KVM_IRQFD_FLAG_RESAMPLE is only necessary on assignment
 and need not be specified with KVM_IRQFD_FLAG_DEASSIGN.
 
-On arm/arm64, gsi routing being supported, the following can happen:
+On arm64, gsi routing being supported, the following can happen:
 
 - in case no routing entry is associated to this gsi, injection fails
 - in case the gsi is associated to an irqchip routing entry,
@@ -3104,7 +3145,7 @@ current state.  "addr" is ignored.
 ----------------------
 
 :Capability: basic
-:Architectures: arm, arm64
+:Architectures: arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_vcpu_init (in)
 :Returns: 0 on success; -1 on error
@@ -3202,7 +3243,7 @@ Possible features:
 -----------------------------
 
 :Capability: basic
-:Architectures: arm, arm64
+:Architectures: arm64
 :Type: vm ioctl
 :Parameters: struct kvm_vcpu_init (out)
 :Returns: 0 on success; -1 on error
@@ -3231,7 +3272,7 @@ VCPU matching underlying host.
 ---------------------
 
 :Capability: basic
-:Architectures: arm, arm64, mips
+:Architectures: arm64, mips
 :Type: vcpu ioctl
 :Parameters: struct kvm_reg_list (in/out)
 :Returns: 0 on success; -1 on error
@@ -3258,7 +3299,7 @@ KVM_GET_ONE_REG/KVM_SET_ONE_REG calls.
 -----------------------------------------
 
 :Capability: KVM_CAP_ARM_SET_DEVICE_ADDR
-:Architectures: arm, arm64
+:Architectures: arm64
 :Type: vm ioctl
 :Parameters: struct kvm_arm_device_address (in)
 :Returns: 0 on success, -1 on error
@@ -3285,13 +3326,13 @@ can access emulated or directly exposed devices, which the host kernel needs
 to know about. The id field is an architecture specific identifier for a
 specific device.
 
-ARM/arm64 divides the id field into two parts, a device id and an
+arm64 divides the id field into two parts, a device id and an
 address type id specific to the individual device::
 
   bits:  | 63        ...       32 | 31    ...    16 | 15    ...    0 |
   field: |        0x00000000      |     device id   |  addr type id  |
 
-ARM/arm64 currently only require this when using the in-kernel GIC
+arm64 currently only require this when using the in-kernel GIC
 support for the hardware VGIC features, using KVM_ARM_DEVICE_VGIC_V2
 as the device id.  When setting the base address for the guest's
 mapping of the VGIC virtual CPU and distributor interface, the ioctl
@@ -4505,7 +4546,7 @@ to I/O ports.
 ------------------------------------
 
 :Capability: KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2
-:Architectures: x86, arm, arm64, mips
+:Architectures: x86, arm64, mips
 :Type: vm ioctl
 :Parameters: struct kvm_clear_dirty_log (in)
 :Returns: 0 on success, -1 on error
@@ -4617,7 +4658,7 @@ version has the following quirks:
 4.119 KVM_ARM_VCPU_FINALIZE
 ---------------------------
 
-:Architectures: arm, arm64
+:Architectures: arm64
 :Type: vcpu ioctl
 :Parameters: int feature (in)
 :Returns: 0 on success, -1 on error
@@ -5656,13 +5697,15 @@ should put the acknowledged interrupt vector into the 'epr' field.
   #define KVM_SYSTEM_EVENT_SHUTDOWN       1
   #define KVM_SYSTEM_EVENT_RESET          2
   #define KVM_SYSTEM_EVENT_CRASH          3
+  #define KVM_SYSTEM_EVENT_WAKEUP         4
+  #define KVM_SYSTEM_EVENT_SUSPEND        5
 			__u32 type;
 			__u64 flags;
 		} system_event;
 
 If exit_reason is KVM_EXIT_SYSTEM_EVENT then the vcpu has triggered
 a system-level event using some architecture specific mechanism (hypercall
-or some special instruction). In case of ARM/ARM64, this is triggered using
+or some special instruction). In case of ARM64, this is triggered using
 HVC instruction based PSCI call from the vcpu. The 'type' field describes
 the system-level event type. The 'flags' field describes architecture
 specific flags for the system-level event.
@@ -5680,6 +5723,42 @@ Valid values for 'type' are:
    has requested a crash condition maintenance. Userspace can choose
    to ignore the request, or to gather VM memory core dump and/or
    reset/shutdown of the VM.
+ - KVM_SYSTEM_EVENT_WAKEUP -- the exiting vCPU is in a suspended state and
+   KVM has recognized a wakeup event. Userspace may honor this event by
+   marking the exiting vCPU as runnable, or deny it and call KVM_RUN again.
+ - KVM_SYSTEM_EVENT_SUSPEND -- the guest has requested a suspension of
+   the VM.
+
+For arm/arm64:
+--------------
+
+   KVM_SYSTEM_EVENT_SUSPEND exits are enabled with the
+   KVM_CAP_ARM_SYSTEM_SUSPEND VM capability. If a guest invokes the PSCI
+   SYSTEM_SUSPEND function, KVM will exit to userspace with this event
+   type.
+
+   It is the sole responsibility of userspace to implement the PSCI
+   SYSTEM_SUSPEND call according to ARM DEN0022D.b 5.19 "SYSTEM_SUSPEND".
+   KVM does not change the vCPU's state before exiting to userspace, so
+   the call parameters are left in-place in the vCPU registers.
+
+   Userspace is _required_ to take action for such an exit. It must
+   either:
+
+    - Honor the guest request to suspend the VM. Userspace can request
+      in-kernel emulation of suspension by setting the calling vCPU's
+      state to KVM_MP_STATE_SUSPENDED. Userspace must configure the vCPU's
+      state according to the parameters passed to the PSCI function when
+      the calling vCPU is resumed. See ARM DEN0022D.b 5.19.1 "Intended use"
+      for details on the function parameters.
+
+    - Deny the guest request to suspend the VM. See ARM DEN0022D.b 5.19.2
+      "Caller responsibilities" for possible return values.
+
+Valid flags are:
+
+ - KVM_SYSTEM_EVENT_RESET_FLAG_PSCI_RESET2 (arm64 only) -- the guest issued
+   a SYSTEM_RESET2 call according to v1.1 of the PSCI specification.
 
 ::
 
@@ -5755,7 +5834,7 @@ in send_page or recv a buffer to recv_page).
 			__u64 fault_ipa;
 		} arm_nisv;
 
-Used on arm and arm64 systems. If a guest accesses memory not in a memslot,
+Used on arm64 systems. If a guest accesses memory not in a memslot,
 KVM will typically return to userspace and ask it to do MMIO emulation on its
 behalf. However, for certain classes of instructions, no instruction decode
 (direction, length of memory access) is provided, and fetching and decoding
@@ -5772,15 +5851,21 @@ did not fall within an I/O window.
 Userspace implementations can query for KVM_CAP_ARM_NISV_TO_USER, and enable
 this capability at VM creation. Once this is done, these types of errors will
 instead return to userspace with KVM_EXIT_ARM_NISV, with the valid bits from
-the HSR (arm) and ESR_EL2 (arm64) in the esr_iss field, and the faulting IPA
-in the fault_ipa field. Userspace can either fix up the access if it's
-actually an I/O access by decoding the instruction from guest memory (if it's
-very brave) and continue executing the guest, or it can decide to suspend,
-dump, or restart the guest.
+the ESR_EL2 in the esr_iss field, and the faulting IPA in the fault_ipa field.
+Userspace can either fix up the access if it's actually an I/O access by
+decoding the instruction from guest memory (if it's very brave) and continue
+executing the guest, or it can decide to suspend, dump, or restart the guest.
 
 Note that KVM does not skip the faulting instruction as it does for
 KVM_EXIT_MMIO, but userspace has to emulate any change to the processing state
 if it decides to decode and emulate the instruction.
+
+This feature isn't available to protected VMs, as userspace does not
+have access to the state that is required to perform the emulation.
+Instead, a data abort exception is directly injected in the guest.
+Note that although KVM_CAP_ARM_NISV_TO_USER will be reported if
+queried outside of a protected VM context, the feature will not be
+exposed if queried on a protected VM file descriptor.
 
 ::
 
@@ -6464,7 +6549,7 @@ and injected exceptions.
 
 7.18 KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2
 
-:Architectures: x86, arm, arm64, mips
+:Architectures: x86, arm64, mips
 :Parameters: args[0] whether feature should be enabled or not
 
 Valid flags are::
@@ -6833,7 +6918,7 @@ reserved.
 8.9 KVM_CAP_ARM_USER_IRQ
 ------------------------
 
-:Architectures: arm, arm64
+:Architectures: arm64
 
 This capability, if KVM_CHECK_EXTENSION indicates that it is available, means
 that if userspace creates a VM without an in-kernel interrupt controller, it
@@ -6960,7 +7045,7 @@ HvFlushVirtualAddressList, HvFlushVirtualAddressListEx.
 8.19 KVM_CAP_ARM_INJECT_SERROR_ESR
 ----------------------------------
 
-:Architectures: arm, arm64
+:Architectures: arm64
 
 This capability indicates that userspace can specify (via the
 KVM_SET_VCPU_EVENTS ioctl) the syndrome value reported to the guest when it
@@ -7265,6 +7350,16 @@ The argument to KVM_ENABLE_CAP is also a bitmask, and must be a subset
 of the result of KVM_CHECK_EXTENSION.  KVM will forward to userspace
 the hypercalls whose corresponding bit is in the argument, and return
 ENOSYS for the others.
+
+8.36 KVM_CAP_ARM_SYSTEM_SUSPEND
+-------------------------------
+
+:Capability: KVM_CAP_ARM_SYSTEM_SUSPEND
+:Architectures: arm64
+:Type: vm
+
+When enabled, KVM will exit to userspace with KVM_EXIT_SYSTEM_EVENT of
+type KVM_SYSTEM_EVENT_SUSPEND to process the guest suspend request.
 
 9. Known KVM API problems
 =========================

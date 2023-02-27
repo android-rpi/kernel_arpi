@@ -46,6 +46,8 @@
 #include <asm/system_misc.h>
 #include <asm/sysreg.h>
 
+#include <trace/hooks/traps.h>
+
 static bool __kprobes __check_eq(unsigned long pstate)
 {
 	return (pstate & PSR_Z_BIT) != 0;
@@ -495,6 +497,7 @@ void do_undefinstr(struct pt_regs *regs)
 	if (call_undef_hook(regs) == 0)
 		return;
 
+	trace_android_rvh_do_undefinstr(regs);
 	BUG_ON(!user_mode(regs));
 	force_signal_inject(SIGILL, ILL_ILLOPC, regs->pc, 0);
 }
@@ -513,6 +516,7 @@ void do_ptrauth_fault(struct pt_regs *regs, unsigned long esr)
 	 * Unexpected FPAC exception or pointer authentication failure in
 	 * the kernel: kill the task before it does any more harm.
 	 */
+	trace_android_rvh_do_ptrauth_fault(regs, esr);
 	BUG_ON(!user_mode(regs));
 	force_signal_inject(SIGILL, ILL_ILLOPN, regs->pc, esr);
 }
@@ -585,11 +589,11 @@ static void ctr_read_handler(unsigned long esr, struct pt_regs *regs)
 
 	if (cpus_have_const_cap(ARM64_WORKAROUND_1542419)) {
 		/* Hide DIC so that we can trap the unnecessary maintenance...*/
-		val &= ~BIT(CTR_DIC_SHIFT);
+		val &= ~BIT(CTR_EL0_DIC_SHIFT);
 
 		/* ... and fake IminLine to reduce the number of traps. */
-		val &= ~CTR_IMINLINE_MASK;
-		val |= (PAGE_SHIFT - 2) & CTR_IMINLINE_MASK;
+		val &= ~CTR_EL0_IminLine_MASK;
+		val |= (PAGE_SHIFT - 2) & CTR_EL0_IminLine_MASK;
 	}
 
 	pt_regs_write_reg(regs, rt, val);
@@ -816,6 +820,7 @@ static const char *esr_class_str[] = {
 	[ESR_ELx_EC_SVE]		= "SVE",
 	[ESR_ELx_EC_ERET]		= "ERET/ERETAA/ERETAB",
 	[ESR_ELx_EC_FPAC]		= "FPAC",
+	[ESR_ELx_EC_SME]		= "SME",
 	[ESR_ELx_EC_IMP_DEF]		= "EL3 IMP DEF",
 	[ESR_ELx_EC_IABT_LOW]		= "IABT (lower EL)",
 	[ESR_ELx_EC_IABT_CUR]		= "IABT (current EL)",
@@ -898,6 +903,8 @@ void __noreturn arm64_serror_panic(struct pt_regs *regs, unsigned long esr)
 
 	pr_crit("SError Interrupt on CPU%d, code 0x%016lx -- %s\n",
 		smp_processor_id(), esr, esr_get_class_string(esr));
+
+	trace_android_rvh_arm64_serror_panic(regs, esr);
 	if (regs)
 		__show_regs(regs);
 

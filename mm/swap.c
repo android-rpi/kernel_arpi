@@ -43,6 +43,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/pagemap.h>
 
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
+
 /* How many pages do we try to swap or page in/out together? */
 int page_cluster;
 
@@ -223,6 +226,7 @@ static bool pagevec_add_and_need_flush(struct pagevec *pvec, struct page *page)
 			lru_cache_disabled())
 		ret = true;
 
+	trace_android_vh_pagevec_drain(page, &ret);
 	return ret;
 }
 
@@ -325,7 +329,7 @@ static bool need_activate_page_drain(int cpu)
 	return pagevec_count(&per_cpu(lru_pvecs.activate_page, cpu)) != 0;
 }
 
-static void activate_page(struct page *page)
+void activate_page(struct page *page)
 {
 	page = compound_head(page);
 	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
@@ -345,7 +349,7 @@ static inline void activate_page_drain(int cpu)
 {
 }
 
-static void activate_page(struct page *page)
+void activate_page(struct page *page)
 {
 	struct lruvec *lruvec;
 
@@ -389,6 +393,40 @@ static void __lru_cache_activate_page(struct page *page)
 	local_unlock(&lru_pvecs.lock);
 }
 
+#ifdef CONFIG_LRU_GEN
+static void page_inc_refs(struct page *page)
+{
+	unsigned long new_flags, old_flags = READ_ONCE(page->flags);
+
+	if (PageUnevictable(page))
+		return;
+
+	if (!PageReferenced(page)) {
+		SetPageReferenced(page);
+		return;
+	}
+
+	if (!PageWorkingset(page)) {
+		SetPageWorkingset(page);
+		return;
+	}
+
+	/* see the comment on MAX_NR_TIERS */
+	do {
+		new_flags = old_flags & LRU_REFS_MASK;
+		if (new_flags == LRU_REFS_MASK)
+			break;
+
+		new_flags += BIT(LRU_REFS_PGOFF);
+		new_flags |= old_flags & ~LRU_REFS_MASK;
+	} while (!try_cmpxchg(&page->flags, &old_flags, new_flags));
+}
+#else
+static void page_inc_refs(struct page *page)
+{
+}
+#endif /* CONFIG_LRU_GEN */
+
 /*
  * Mark a page as having seen activity.
  *
@@ -402,6 +440,11 @@ static void __lru_cache_activate_page(struct page *page)
 void mark_page_accessed(struct page *page)
 {
 	page = compound_head(page);
+
+	if (lru_gen_enabled()) {
+		page_inc_refs(page);
+		return;
+	}
 
 	if (!PageReferenced(page)) {
 		SetPageReferenced(page);
@@ -445,6 +488,11 @@ void lru_cache_add(struct page *page)
 
 	VM_BUG_ON_PAGE(PageActive(page) && PageUnevictable(page), page);
 	VM_BUG_ON_PAGE(PageLRU(page), page);
+
+	/* see the comment in lru_gen_add_page() */
+	if (lru_gen_enabled() && !PageUnevictable(page) &&
+	    lru_gen_in_fault() && !(current->flags & PF_MEMALLOC))
+		SetPageActive(page);
 
 	get_page(page);
 	local_lock(&lru_pvecs.lock);
@@ -547,7 +595,7 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec)
 
 static void lru_deactivate_fn(struct page *page, struct lruvec *lruvec)
 {
-	if (PageActive(page) && !PageUnevictable(page)) {
+	if (!PageUnevictable(page) && (PageActive(page) || lru_gen_enabled())) {
 		int nr_pages = thp_nr_pages(page);
 
 		del_page_from_lru_list(page, lruvec);
@@ -661,7 +709,8 @@ void deactivate_file_page(struct page *page)
  */
 void deactivate_page(struct page *page)
 {
-	if (PageLRU(page) && PageActive(page) && !PageUnevictable(page)) {
+	if (PageLRU(page) && !PageUnevictable(page) &&
+	    (PageActive(page) || lru_gen_enabled())) {
 		struct pagevec *pvec;
 
 		local_lock(&lru_pvecs.lock);
@@ -847,7 +896,18 @@ void lru_add_drain_all(void)
 }
 #endif /* CONFIG_SMP */
 
-atomic_t lru_disable_count = ATOMIC_INIT(0);
+static atomic_t lru_disable_count = ATOMIC_INIT(0);
+
+bool lru_cache_disabled(void)
+{
+	return atomic_read(&lru_disable_count) != 0;
+}
+
+void lru_cache_enable(void)
+{
+	atomic_dec(&lru_disable_count);
+}
+EXPORT_SYMBOL_GPL(lru_cache_enable);
 
 /*
  * lru_cache_disable() needs to be called before we start compiling
@@ -859,7 +919,12 @@ atomic_t lru_disable_count = ATOMIC_INIT(0);
  */
 void lru_cache_disable(void)
 {
-	atomic_inc(&lru_disable_count);
+	/*
+	 * If someone is already disabled lru_cache, just return with
+	 * increasing the lru_disable_count.
+	 */
+	if (atomic_inc_not_zero(&lru_disable_count))
+		return;
 #ifdef CONFIG_SMP
 	/*
 	 * lru_add_drain_all in the force mode will schedule draining on
@@ -873,7 +938,9 @@ void lru_cache_disable(void)
 #else
 	lru_add_and_bh_lrus_drain();
 #endif
+	atomic_inc(&lru_disable_count);
 }
+EXPORT_SYMBOL_GPL(lru_cache_disable);
 
 /**
  * release_pages - batched put_page()

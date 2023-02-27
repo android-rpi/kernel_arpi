@@ -18,6 +18,7 @@
 #include <linux/if_ether.h>
 #include <linux/skbuff.h>
 #include <linux/ieee80211.h>
+#include <linux/android_kabi.h>
 #include <net/cfg80211.h>
 #include <net/codel.h>
 #include <net/ieee80211_radiotap.h>
@@ -702,6 +703,8 @@ struct ieee80211_bss_conf {
 	u32 unsol_bcast_probe_resp_interval;
 	bool s1g;
 	struct cfg80211_bitrate_mask beacon_tx_rate;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -1102,6 +1105,9 @@ struct ieee80211_tx_info {
 			void *rate_driver_data[
 				IEEE80211_TX_INFO_RATE_DRIVER_DATA_SIZE / sizeof(void *)];
 		};
+
+		ANDROID_KABI_RESERVE(1);
+
 		void *driver_data[
 			IEEE80211_TX_INFO_DRIVER_DATA_SIZE / sizeof(void *)];
 	};
@@ -1591,6 +1597,8 @@ struct ieee80211_conf {
 	struct cfg80211_chan_def chandef;
 	bool radar_enabled;
 	enum ieee80211_smps_mode smps_mode;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -1745,6 +1753,8 @@ struct ieee80211_vif {
 
 	bool color_change_active;
 	u8 color_change_color;
+
+	ANDROID_KABI_RESERVE(1);
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -2035,6 +2045,45 @@ struct ieee80211_sta_txpwr {
 	enum nl80211_tx_power_setting type;
 };
 
+#define MAX_STA_LINKS			15
+
+/**
+ * struct ieee80211_link_sta - station Link specific info
+ * All link specific info for a STA link for a non MLD STA(single)
+ * or a MLD STA(multiple entries) are stored here.
+ *
+ * @addr: MAC address of the Link STA. For non-MLO STA this is same as the addr
+ *	in ieee80211_sta. For MLO Link STA this addr can be same or different
+ *	from addr in ieee80211_sta (representing MLD STA addr)
+ * @supp_rates: Bitmap of supported rates
+ * @ht_cap: HT capabilities of this STA; restricted to our own capabilities
+ * @vht_cap: VHT capabilities of this STA; restricted to our own capabilities
+ * @he_cap: HE capabilities of this STA
+ * @he_6ghz_capa: on 6 GHz, holds the HE 6 GHz band capabilities
+ * @eht_cap: EHT capabilities of this STA
+ * @bandwidth: current bandwidth the station can receive with
+ * @rx_nss: in HT/VHT, the maximum number of spatial streams the
+ *	station can receive at the moment, changed by operating mode
+ *	notifications and capabilities. The value is only valid after
+ *	the station moves to associated state.
+ * @txpwr: the station tx power configuration
+ *
+ */
+struct ieee80211_link_sta {
+	u8 addr[ETH_ALEN];
+
+	u32 supp_rates[NUM_NL80211_BANDS];
+	struct ieee80211_sta_ht_cap ht_cap;
+	struct ieee80211_sta_vht_cap vht_cap;
+	struct ieee80211_sta_he_cap he_cap;
+	struct ieee80211_he_6ghz_capa he_6ghz_capa;
+	struct ieee80211_sta_eht_cap eht_cap;
+
+	u8 rx_nss;
+	enum ieee80211_sta_rx_bandwidth bandwidth;
+	struct ieee80211_sta_txpwr txpwr;
+};
+
 /**
  * struct ieee80211_sta - station table entry
  *
@@ -2044,14 +2093,11 @@ struct ieee80211_sta_txpwr {
  * either be protected by rcu_read_lock() explicitly or implicitly,
  * or you must take good care to not use such a pointer after a
  * call to your sta_remove callback that removed it.
+ * This also represents the MLD STA in case of MLO association
+ * and holds pointers to various link STA's
  *
  * @addr: MAC address
  * @aid: AID we assigned to the station if we're an AP
- * @supp_rates: Bitmap of supported rates (per band)
- * @ht_cap: HT capabilities of this STA; restricted to our own capabilities
- * @vht_cap: VHT capabilities of this STA; restricted to our own capabilities
- * @he_cap: HE capabilities of this STA
- * @he_6ghz_capa: on 6 GHz, holds the HE 6 GHz band capabilities
  * @max_rx_aggregation_subframes: maximal amount of frames in a single AMPDU
  *	that this station is allowed to transmit to us.
  *	Can be modified by driver.
@@ -2063,11 +2109,6 @@ struct ieee80211_sta_txpwr {
  *	if wme is supported. The bits order is like in
  *	IEEE80211_WMM_IE_STA_QOSINFO_AC_*.
  * @max_sp: max Service Period. Only valid if wme is supported.
- * @bandwidth: current bandwidth the station can receive with
- * @rx_nss: in HT/VHT, the maximum number of spatial streams the
- *	station can receive at the moment, changed by operating mode
- *	notifications and capabilities. The value is only valid after
- *	the station moves to associated state.
  * @smps_mode: current SMPS mode (off, static or dynamic)
  * @rates: rate control selection table
  * @tdls: indicates whether the STA is a TDLS peer
@@ -2080,24 +2121,28 @@ struct ieee80211_sta_txpwr {
  * @support_p2p_ps: indicates whether the STA supports P2P PS mechanism or not.
  * @max_rc_amsdu_len: Maximum A-MSDU size in bytes recommended by rate control.
  * @max_tid_amsdu_len: Maximum A-MSDU size in bytes for this TID
- * @txpwr: the station tx power configuration
  * @txq: per-TID data TX queues (if driver uses the TXQ abstraction); note that
  *	the last entry (%IEEE80211_NUM_TIDS) is used for non-data frames
+ * @multi_link_sta: Identifies if this sta is a MLD STA
+ * @deflink: This holds the default link STA information, for non MLO STA all link
+ *	specific STA information is accessed through @deflink or through
+ *	link[0] which points to address of @deflink. For MLO Link STA
+ *	the first added link STA will point to deflink.
+ * @link: reference to Link Sta entries. For Non MLO STA, except 1st link,
+ *	i.e link[0] all links would be assigned to NULL by default and
+ *	would access link information via @deflink or link[0]. For MLO
+ *	STA, first link STA being added will point its link pointer to
+ *	@deflink address and remaining would be allocated and the address
+ *	would be assigned to link[link_id] where link_id is the id assigned
+ *	by the AP.
  */
 struct ieee80211_sta {
-	u32 supp_rates[NUM_NL80211_BANDS];
 	u8 addr[ETH_ALEN];
 	u16 aid;
-	struct ieee80211_sta_ht_cap ht_cap;
-	struct ieee80211_sta_vht_cap vht_cap;
-	struct ieee80211_sta_he_cap he_cap;
-	struct ieee80211_he_6ghz_capa he_6ghz_capa;
 	u16 max_rx_aggregation_subframes;
 	bool wme;
 	u8 uapsd_queues;
 	u8 max_sp;
-	u8 rx_nss;
-	enum ieee80211_sta_rx_bandwidth bandwidth;
 	enum ieee80211_smps_mode smps_mode;
 	struct ieee80211_sta_rates __rcu *rates;
 	bool tdls;
@@ -2124,9 +2169,14 @@ struct ieee80211_sta {
 	bool support_p2p_ps;
 	u16 max_rc_amsdu_len;
 	u16 max_tid_amsdu_len[IEEE80211_NUM_TIDS];
-	struct ieee80211_sta_txpwr txpwr;
 
 	struct ieee80211_txq *txq[IEEE80211_NUM_TIDS + 1];
+
+	bool multi_link_sta;
+	struct ieee80211_link_sta deflink;
+	struct ieee80211_link_sta *link[MAX_STA_LINKS];
+
+	ANDROID_KABI_RESERVE(1);
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -2633,6 +2683,8 @@ struct ieee80211_hw {
 	u8 tx_sk_pacing_shift;
 	u8 weight_multiplier;
 	u32 max_mtu;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 static inline bool _ieee80211_hw_check(struct ieee80211_hw *hw,
@@ -3933,6 +3985,14 @@ struct ieee80211_prep_tx_info {
  *	twt structure.
  * @twt_teardown_request: Update the hw with TWT teardown request received
  *	from the peer.
+ * @set_radar_background: Configure dedicated offchannel chain available for
+ *	radar/CAC detection on some hw. This chain can't be used to transmit
+ *	or receive frames and it is bounded to a running wdev.
+ *	Background radar/CAC detection allows to avoid the CAC downtime
+ *	switching to a different channel during CAC detection on the selected
+ *	radar channel.
+ *	The caller is expected to set chandef pointer to NULL in order to
+ *	disable background CAC/radar detection.
  */
 struct ieee80211_ops {
 	void (*tx)(struct ieee80211_hw *hw,
@@ -4261,6 +4321,13 @@ struct ieee80211_ops {
 			      struct ieee80211_twt_setup *twt);
 	void (*twt_teardown_request)(struct ieee80211_hw *hw,
 				     struct ieee80211_sta *sta, u8 flowid);
+	int (*set_radar_background)(struct ieee80211_hw *hw,
+				    struct cfg80211_chan_def *chandef);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 /**
@@ -4908,12 +4975,14 @@ void ieee80211_report_low_ack(struct ieee80211_sta *sta, u32 num_packets);
  * @cntdwn_counter_offs: array of IEEE80211_MAX_CNTDWN_COUNTERS_NUM offsets
  *	to countdown counters.  This array can contain zero values which
  *	should be ignored.
+ * @mbssid_off: position of the multiple bssid element
  */
 struct ieee80211_mutable_offsets {
 	u16 tim_offset;
 	u16 tim_length;
 
 	u16 cntdwn_counter_offs[IEEE80211_MAX_CNTDWN_COUNTERS_NUM];
+	u16 mbssid_off;
 };
 
 /**
@@ -6276,13 +6345,18 @@ struct rate_control_ops {
 				struct dentry *dir);
 
 	u32 (*get_expected_throughput)(void *priv_sta);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 static inline int rate_supported(struct ieee80211_sta *sta,
 				 enum nl80211_band band,
 				 int index)
 {
-	return (sta == NULL || sta->supp_rates[band] & BIT(index));
+	return (sta == NULL || sta->deflink.supp_rates[band] & BIT(index));
 }
 
 static inline s8

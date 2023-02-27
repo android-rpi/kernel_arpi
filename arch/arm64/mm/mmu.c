@@ -97,7 +97,8 @@ static phys_addr_t __init early_pgtable_alloc(int shift)
 	phys_addr_t phys;
 	void *ptr;
 
-	phys = memblock_phys_alloc(PAGE_SIZE, PAGE_SIZE);
+	phys = memblock_phys_alloc_range(PAGE_SIZE, PAGE_SIZE, 0,
+					 MEMBLOCK_ALLOC_NOLEAKTRACE);
 	if (!phys)
 		panic("Failed to allocate page table page\n");
 
@@ -700,7 +701,7 @@ static bool arm64_early_this_cpu_has_bti(void)
 
 	pfr1 = __read_sysreg_by_encoding(SYS_ID_AA64PFR1_EL1);
 	return cpuid_feature_extract_unsigned_field(pfr1,
-						    ID_AA64PFR1_BT_SHIFT);
+						    ID_AA64PFR1_EL1_BT_SHIFT);
 }
 
 /*
@@ -1329,6 +1330,21 @@ void __set_fixmap(enum fixed_addresses idx,
 		pte_clear(&init_mm, addr, ptep);
 		flush_tlb_kernel_range(addr, addr+PAGE_SIZE);
 	}
+}
+
+pte_t *__get_fixmap_pte(enum fixed_addresses idx)
+{
+	unsigned long addr = __fix_to_virt(idx);
+	pte_t *ptep;
+
+	BUG_ON(idx <= FIX_HOLE || idx >= __end_of_fixed_addresses);
+
+	ptep = fixmap_pte(addr);
+
+	if (!pte_valid(*ptep))
+		return NULL;
+
+	return ptep;
 }
 
 void *__init fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)

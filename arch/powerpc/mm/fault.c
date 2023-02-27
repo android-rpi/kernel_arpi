@@ -394,6 +394,9 @@ static int ___do_page_fault(struct pt_regs *regs, unsigned long address,
 	int is_write = page_fault_is_write(error_code);
 	vm_fault_t fault, major = 0;
 	bool kprobe_fault = kprobe_page_fault(regs, 11);
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	unsigned long seq;
+#endif
 
 	if (unlikely(debugger_fault_handler(regs) || kprobe_fault))
 		return 0;
@@ -449,6 +452,64 @@ static int ___do_page_fault(struct pt_regs *regs, unsigned long address,
 		flags |= FAULT_FLAG_WRITE;
 	if (is_exec)
 		flags |= FAULT_FLAG_INSTRUCTION;
+
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	/*
+	 * No need to try speculative faults for kernel or
+	 * single threaded user space.
+	 */
+	if (!(flags & FAULT_FLAG_USER) || atomic_read(&mm->mm_users) == 1)
+		goto no_spf;
+
+	count_vm_event(SPF_ATTEMPT);
+	seq = mmap_seq_read_start(mm);
+	if (seq & 1) {
+		count_vm_spf_event(SPF_ABORT_ODD);
+		goto spf_abort;
+	}
+	vma = get_vma(mm, address);
+	if (!vma) {
+		count_vm_spf_event(SPF_ABORT_UNMAPPED);
+		goto spf_abort;
+	}
+	if (!vma_can_speculate(vma, flags)) {
+		put_vma(vma);
+		count_vm_spf_event(SPF_ABORT_NO_SPECULATE);
+		goto spf_abort;
+	}
+
+	if (!mmap_seq_read_check(mm, seq, SPF_ABORT_VMA_COPY)) {
+		put_vma(vma);
+		goto spf_abort;
+	}
+#ifdef CONFIG_PPC_MEM_KEYS
+	if (unlikely(access_pkey_error(is_write, is_exec,
+				       (error_code & DSISR_KEYFAULT), vma))) {
+		put_vma(vma);
+		count_vm_spf_event(SPF_ABORT_ACCESS_ERROR);
+		goto spf_abort;
+	}
+#endif /* CONFIG_PPC_MEM_KEYS */
+	if (unlikely(access_error(is_write, is_exec, vma))) {
+		put_vma(vma);
+		count_vm_spf_event(SPF_ABORT_ACCESS_ERROR);
+		goto spf_abort;
+	}
+	fault = do_handle_mm_fault(vma, address,
+			flags | FAULT_FLAG_SPECULATIVE, seq, regs);
+	put_vma(vma);
+	major |= fault & VM_FAULT_MAJOR;
+
+	if (fault_signal_pending(fault, regs))
+		return user_mode(regs) ? 0 : SIGBUS;
+	if (!(fault & VM_FAULT_RETRY))
+		goto done;
+
+spf_abort:
+	count_vm_event(SPF_ABORT);
+no_spf:
+
+#endif	/* CONFIG_SPECULATIVE_PAGE_FAULT */
 
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
@@ -523,6 +584,9 @@ retry:
 	}
 
 	mmap_read_unlock(current->mm);
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+done:
+#endif
 
 	if (unlikely(fault & VM_FAULT_ERROR))
 		return mm_fault_error(regs, address, fault);

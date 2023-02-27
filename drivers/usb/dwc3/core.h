@@ -22,6 +22,7 @@
 #include <linux/debugfs.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
+#include <linux/android_kabi.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -230,6 +231,7 @@
 
 /* Global Configuration Register */
 #define DWC3_GCTL_PWRDNSCALE(n)	((n) << 19)
+#define DWC3_GCTL_PWRDNSCALE_MASK	DWC3_GCTL_PWRDNSCALE(0x1fff)
 #define DWC3_GCTL_U2RSTECN	BIT(16)
 #define DWC3_GCTL_RAMCLKSEL(x)	(((x) & DWC3_GCTL_CLK_MASK) << 6)
 #define DWC3_GCTL_CLK_BUS	(0)
@@ -661,6 +663,8 @@ struct dwc3_event_buffer {
 	dma_addr_t		dma;
 
 	struct dwc3		*dwc;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 #define DWC3_EP_FLAG_STALLED	BIT(0)
@@ -725,6 +729,7 @@ struct dwc3_ep {
 #define DWC3_EP_FIRST_STREAM_PRIMED	BIT(10)
 #define DWC3_EP_PENDING_CLEAR_STALL	BIT(11)
 #define DWC3_EP_TXFIFO_RESIZED		BIT(12)
+#define DWC3_EP_DELAY_STOP             BIT(13)
 
 	/* This last one is specific to EP0 */
 #define DWC3_EP0_DIR_IN		BIT(31)
@@ -755,6 +760,9 @@ struct dwc3_ep {
 	/* For isochronous START TRANSFER workaround only */
 	u8			combo_num;
 	int			start_cmd_status;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 enum dwc3_phy {
@@ -866,6 +874,9 @@ struct dwc3_hwparams {
 	u32	hwparams7;
 	u32	hwparams8;
 	u32	hwparams9;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /* HWPARAMS0 */
@@ -934,6 +945,9 @@ struct dwc3_request {
 	unsigned int		needs_extra_trb:1;
 	unsigned int		direction:1;
 	unsigned int		mapped:1;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /*
@@ -1303,6 +1317,11 @@ struct dwc3 {
 	int			max_cfg_eps;
 	int			last_fifo_depth;
 	int			num_ep_resized;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 #define INCRX_BURST_MODE 0

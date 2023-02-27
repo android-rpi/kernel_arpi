@@ -24,6 +24,13 @@ config KEXEC_ELF
 config HAVE_IMA_KEXEC
 	bool
 
+config ARCH_HAS_SUBPAGE_FAULTS
+	bool
+	help
+	  Select if the architecture can check permissions at sub-page
+	  granularity (e.g. arm64 MTE). The probe_user_*() functions
+	  must be implemented.
+
 config SET_FS
 	bool
 
@@ -713,10 +720,7 @@ config ARCH_SUPPORTS_CFI_CLANG
 config CFI_CLANG
 	bool "Use Clang's Control Flow Integrity (CFI)"
 	depends on LTO_CLANG && ARCH_SUPPORTS_CFI_CLANG
-	# Clang >= 12:
-	# - https://bugs.llvm.org/show_bug.cgi?id=46258
-	# - https://bugs.llvm.org/show_bug.cgi?id=47479
-	depends on CLANG_VERSION >= 120000
+	depends on CLANG_VERSION >= 140000
 	select KALLSYMS
 	help
 	  This option enables Clang’s forward-edge Control Flow Integrity
@@ -1238,6 +1242,9 @@ config RELR
 config ARCH_HAS_MEM_ENCRYPT
 	bool
 
+config ARCH_HAS_MEM_RELINQUISH
+	bool
+
 config ARCH_HAS_CC_PLATFORM
 	bool
 
@@ -1294,6 +1301,17 @@ config ARCH_HAS_ELFCORE_COMPAT
 
 config ARCH_HAS_PARANOID_L1D_FLUSH
 	bool
+
+config ARCH_HAVE_TRACE_MMIO_ACCESS
+	bool
+
+config ARCH_HAS_NONLEAF_PMD_YOUNG
+	bool
+	help
+	  Architectures that select this option are capable of setting the
+	  accessed bit in non-leaf PMD entries when using them as part of linear
+	  address translations. Page table walkers that clear the accessed bit
+	  may use this capability to reduce their search space.
 
 source "kernel/gcov/Kconfig"
 

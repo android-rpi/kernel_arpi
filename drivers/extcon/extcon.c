@@ -486,7 +486,7 @@ EXPORT_SYMBOL_GPL(extcon_sync);
  *
  * Returns 0 if success or error number if fail.
  */
-int extcon_get_state(struct extcon_dev *edev, const unsigned int id)
+int extcon_get_state(struct extcon_dev *edev, unsigned int id)
 {
 	int index, state;
 	unsigned long flags;
@@ -576,19 +576,7 @@ EXPORT_SYMBOL_GPL(extcon_set_state);
  */
 int extcon_set_state_sync(struct extcon_dev *edev, unsigned int id, bool state)
 {
-	int ret, index;
-	unsigned long flags;
-
-	index = find_cable_index_by_id(edev, id);
-	if (index < 0)
-		return index;
-
-	/* Check whether the external connector's state is changed. */
-	spin_lock_irqsave(&edev->lock, flags);
-	ret = is_extcon_changed(edev, index, state);
-	spin_unlock_irqrestore(&edev->lock, flags);
-	if (!ret)
-		return 0;
+	int ret;
 
 	ret = extcon_set_state(edev, id, state);
 	if (ret < 0)

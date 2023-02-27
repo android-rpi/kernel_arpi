@@ -40,6 +40,9 @@
 #include <linux/percpu.h>
 #include <linux/thread_info.h>
 #include <linux/prctl.h>
+#include <linux/stacktrace.h>
+#include <trace/hooks/fpsimd.h>
+#include <trace/hooks/mpam.h>
 
 #include <asm/alternative.h>
 #include <asm/compat.h>
@@ -245,10 +248,13 @@ void show_regs(struct pt_regs *regs)
 	__show_regs(regs);
 	dump_backtrace(regs, NULL, KERN_DEFAULT);
 }
+EXPORT_SYMBOL_GPL(show_regs);
 
 static void tls_thread_flush(void)
 {
 	write_sysreg(0, tpidr_el0);
+	if (system_supports_tpidr2())
+		write_sysreg_s(0, SYS_TPIDR2_EL0);
 
 	if (is_compat_task()) {
 		current->thread.uw.tp_value = 0;
@@ -297,15 +303,41 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 
 	/*
 	 * Detach src's sve_state (if any) from dst so that it does not
-	 * get erroneously used or freed prematurely.  dst's sve_state
+	 * get erroneously used or freed prematurely.  dst's copies
 	 * will be allocated on demand later on if dst uses SVE.
 	 * For consistency, also clear TIF_SVE here: this could be done
 	 * later in copy_process(), but to avoid tripping up future
-	 * maintainers it is best not to leave TIF_SVE and sve_state in
+	 * maintainers it is best not to leave TIF flags and buffers in
 	 * an inconsistent state, even temporarily.
 	 */
 	dst->thread.sve_state = NULL;
 	clear_tsk_thread_flag(dst, TIF_SVE);
+
+	/*
+	 * In the unlikely event that we create a new thread with ZA
+	 * enabled we should retain the ZA state so duplicate it here.
+	 * This may be shortly freed if we exec() or if CLONE_SETTLS
+	 * but it's simpler to do it here. To avoid confusing the rest
+	 * of the code ensure that we have a sve_state allocated
+	 * whenever za_state is allocated.
+	 */
+	if (thread_za_enabled(&src->thread)) {
+		dst->thread.sve_state = kzalloc(sve_state_size(src),
+						GFP_KERNEL);
+		if (!dst->thread.sve_state)
+			return -ENOMEM;
+		dst->thread.za_state = kmemdup(src->thread.za_state,
+					       za_state_size(src),
+					       GFP_KERNEL);
+		if (!dst->thread.za_state) {
+			kfree(dst->thread.sve_state);
+			dst->thread.sve_state = NULL;
+			return -ENOMEM;
+		}
+	} else {
+		dst->thread.za_state = NULL;
+		clear_tsk_thread_flag(dst, TIF_SME);
+	}
 
 	/* clear any pending asynchronous tag fault raised by the parent */
 	clear_tsk_thread_flag(dst, TIF_MTE_ASYNC_FAULT);
@@ -342,6 +374,8 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 		 * out-of-sync with the saved value.
 		 */
 		*task_user_tls(p) = read_sysreg(tpidr_el0);
+		if (system_supports_tpidr2())
+			p->thread.tpidr2_el0 = read_sysreg_s(SYS_TPIDR2_EL0);
 
 		if (stack_start) {
 			if (is_compat_thread(task_thread_info(p)))
@@ -352,10 +386,12 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 
 		/*
 		 * If a TLS pointer was passed to clone, use it for the new
-		 * thread.
+		 * thread.  We also reset TPIDR2 if it's in use.
 		 */
-		if (clone_flags & CLONE_SETTLS)
+		if (clone_flags & CLONE_SETTLS) {
 			p->thread.uw.tp_value = tls;
+			p->thread.tpidr2_el0 = 0;
+		}
 	} else {
 		/*
 		 * A kthread has no context to ERET to, so ensure any buggy
@@ -386,6 +422,8 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 void tls_preserve_current_state(void)
 {
 	*task_user_tls(current) = read_sysreg(tpidr_el0);
+	if (system_supports_tpidr2() && !is_compat_task())
+		current->thread.tpidr2_el0 = read_sysreg_s(SYS_TPIDR2_EL0);
 }
 
 static void tls_thread_switch(struct task_struct *next)
@@ -398,6 +436,8 @@ static void tls_thread_switch(struct task_struct *next)
 		write_sysreg(0, tpidrro_el0);
 
 	write_sysreg(*task_user_tls(next), tpidr_el0);
+	if (system_supports_tpidr2())
+		write_sysreg_s(next->thread.tpidr2_el0, SYS_TPIDR2_EL0);
 }
 
 /*
@@ -482,7 +522,8 @@ void update_sctlr_el1(u64 sctlr)
 /*
  * Thread switching.
  */
-__notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
+__notrace_funcgraph __sched
+struct task_struct *__switch_to(struct task_struct *prev,
 				struct task_struct *next)
 {
 	struct task_struct *last;
@@ -495,6 +536,12 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	ssbs_thread_switch(next);
 	erratum_1418040_thread_switch(next);
 	ptrauth_thread_switch_user(next);
+
+	/*
+	 *  vendor hook is needed before the dsb(),
+	 *  because MPAM is related to cache maintenance.
+	 */
+	trace_android_vh_mpam_set(prev, next);
 
 	/*
 	 * Complete any pending TLB or cache maintenance on this CPU in case
@@ -514,38 +561,48 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	if (prev->thread.sctlr_user != next->thread.sctlr_user)
 		update_sctlr_el1(next->thread.sctlr_user);
 
+	trace_android_vh_is_fpsimd_save(prev, next);
+
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
 
 	return last;
 }
 
+struct wchan_info {
+	unsigned long	pc;
+	int		count;
+};
+
+static bool get_wchan_cb(void *arg, unsigned long pc)
+{
+	struct wchan_info *wchan_info = arg;
+
+	if (!in_sched_functions(pc)) {
+		wchan_info->pc = pc;
+		return false;
+	}
+	return wchan_info->count++ < 16;
+}
+
 unsigned long get_wchan(struct task_struct *p)
 {
-	struct stackframe frame;
-	unsigned long stack_page, ret = 0;
-	int count = 0;
+	struct wchan_info wchan_info = {
+		.pc = 0,
+		.count = 0,
+	};
+
 	if (!p || p == current || task_is_running(p))
 		return 0;
 
-	stack_page = (unsigned long)try_get_task_stack(p);
-	if (!stack_page)
+	if (!try_get_task_stack(p))
 		return 0;
 
-	start_backtrace(&frame, thread_saved_fp(p), thread_saved_pc(p));
+	arch_stack_walk(get_wchan_cb, &wchan_info, p, NULL);
 
-	do {
-		if (unwind_frame(p, &frame))
-			goto out;
-		if (!in_sched_functions(frame.pc)) {
-			ret = frame.pc;
-			goto out;
-		}
-	} while (count++ < 16);
-
-out:
 	put_task_stack(p);
-	return ret;
+
+	return wchan_info.pc;
 }
 
 unsigned long arch_align_stack(unsigned long sp)
@@ -628,7 +685,8 @@ long set_tagged_addr_ctrl(struct task_struct *task, unsigned long arg)
 		return -EINVAL;
 
 	if (system_supports_mte())
-		valid_mask |= PR_MTE_TCF_MASK | PR_MTE_TAG_MASK;
+		valid_mask |= PR_MTE_TCF_SYNC | PR_MTE_TCF_ASYNC \
+			| PR_MTE_TAG_MASK;
 
 	if (arg & ~valid_mask)
 		return -EINVAL;

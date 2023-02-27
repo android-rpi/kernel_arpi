@@ -49,6 +49,8 @@
 
 #include <linux/uaccess.h>
 
+#include <trace/hooks/mmc.h>
+
 #include "queue.h"
 #include "block.h"
 #include "core.h"
@@ -1015,16 +1017,25 @@ static int mmc_blk_reset(struct mmc_blk_data *md, struct mmc_host *host,
 	 * in that case.
 	 */
 	main_md->part_curr = err ? MMC_BLK_PART_INVALID : main_md->part_type;
-	if (err)
-		return err;
 	/* Ensure we switch back to the correct partition */
-	if (mmc_blk_part_switch(host->card, md->part_type))
-		/*
-		 * We have failed to get back into the correct
-		 * partition, so we need to abort the whole request.
-		 */
-		return -ENODEV;
-	return 0;
+	if (err) {
+		struct mmc_blk_data *main_md =
+			dev_get_drvdata(&host->card->dev);
+		int part_err;
+
+		main_md->part_curr = main_md->part_type;
+		part_err = mmc_blk_part_switch(host->card, md->part_type);
+		if (part_err) {
+			/*
+			 * We have failed to get back into the correct
+			 * partition, so we need to abort the whole request.
+			 */
+			return -ENODEV;
+		}
+
+		trace_android_vh_mmc_blk_reset(host, err);
+	}
+	return err;
 }
 
 static inline void mmc_blk_reset_success(struct mmc_blk_data *md, int type)
@@ -1499,7 +1510,7 @@ void mmc_blk_cqe_recovery(struct mmc_queue *mq)
 	pr_debug("%s: CQE recovery start\n", mmc_hostname(host));
 
 	err = mmc_cqe_recovery(host);
-	if (err)
+	if (err || host->cqe_recovery_reset_always)
 		mmc_blk_reset(mq->blkdata, host, MMC_BLK_CQE_RECOVERY);
 	mmc_blk_reset_success(mq->blkdata, MMC_BLK_CQE_RECOVERY);
 
@@ -1858,6 +1869,7 @@ static void mmc_blk_mq_rw_recovery(struct mmc_queue *mq, struct request *req)
 	    err && mmc_blk_reset(md, card->host, type)) {
 		pr_err("%s: recovery failed!\n", req->rq_disk->disk_name);
 		mqrq->retries = MMC_NO_RETRIES;
+		trace_android_vh_mmc_blk_mq_rw_recovery(card);
 		return;
 	}
 

@@ -148,7 +148,10 @@ libs-$(CONFIG_EFI_STUB) += $(objtree)/drivers/firmware/efi/libstub/lib.a
 boot		:= arch/arm64/boot
 KBUILD_IMAGE	:= $(boot)/Image.gz
 
+# Don't compile Image in mixed build with "all" target
+ifndef KBUILD_MIXED_TREE
 all:	Image.gz
+endif
 
 
 Image: vmlinux
@@ -188,6 +191,11 @@ archclean:
 	$(Q)$(MAKE) $(clean)=$(boot)
 	$(Q)$(MAKE) $(clean)=arch/arm64/kernel/vdso
 	$(Q)$(MAKE) $(clean)=arch/arm64/kernel/vdso32
+
+ifeq ($(CONFIG_KVM),y)
+archscripts:
+	$(Q)$(MAKE) $(build)=arch/arm64/tools gen-hyprel
+endif
 
 ifeq ($(KBUILD_EXTMOD),)
 # We need to generate vdso-offsets.h before compiling certain files in kernel/.

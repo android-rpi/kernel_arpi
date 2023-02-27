@@ -136,6 +136,24 @@ endif
 
 export KBUILD_EXTMOD
 
+# ANDROID: set up mixed-build support. mixed-build allows device kernel modules
+# to be compiled against a GKI kernel. This approach still uses the headers and
+# Kbuild from device kernel, so care must be taken to ensure that those headers match.
+ifdef KBUILD_MIXED_TREE
+# Need vmlinux.symvers for modpost and System.map for depmod, check whether they exist in KBUILD_MIXED_TREE
+required_mixed_files=vmlinux.symvers System.map
+$(if $(filter-out $(words $(required_mixed_files)), \
+		$(words $(wildcard $(add-prefix $(KBUILD_MIXED_TREE)/,$(required_mixed_files))))),,\
+	$(error KBUILD_MIXED_TREE=$(KBUILD_MIXED_TREE) doesn't contain $(required_mixed_files)))
+endif
+
+mixed-build-prefix = $(if $(KBUILD_MIXED_TREE),$(KBUILD_MIXED_TREE)/)
+export KBUILD_MIXED_TREE
+# This is a hack for kleaf to set mixed-build-prefix within the execution of a make rule, e.g.
+# within __modinst_pre.
+# TODO(b/205893923): Revert this hack once it is properly handled.
+export mixed-build-prefix
+
 # Kbuild will save output files in the current working directory.
 # This does not need to match to the root of the kernel source tree.
 #
@@ -432,11 +450,12 @@ HOSTCXX	= g++
 endif
 HOSTPKG_CONFIG	= pkg-config
 
-export KBUILD_USERCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
-			      -O2 -fomit-frame-pointer -std=gnu89
-export KBUILD_USERLDFLAGS :=
+KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
+			 -O2 -fomit-frame-pointer -std=gnu89
+KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
+KBUILD_USERLDFLAGS := $(USERLDFLAGS)
 
-KBUILD_HOSTCFLAGS   := $(KBUILD_USERCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
+KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
 KBUILD_HOSTCXXFLAGS := -Wall -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
 KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
 KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
@@ -477,7 +496,7 @@ KGZIP		= gzip
 KBZIP2		= bzip2
 KLZOP		= lzop
 LZMA		= lzma
-LZ4		= lz4c
+LZ4		= lz4
 XZ		= xz
 ZSTD		= zstd
 
@@ -531,6 +550,7 @@ export CPP AR NM STRIP OBJCOPY OBJDUMP READELF PAHOLE RESOLVE_BTFIDS LEX YACC AW
 export PERL PYTHON3 CHECK CHECKFLAGS MAKE UTS_MACHINE HOSTCXX
 export KGZIP KBZIP2 KLZOP LZMA LZ4 XZ ZSTD
 export KBUILD_HOSTCXXFLAGS KBUILD_HOSTLDFLAGS KBUILD_HOSTLDLIBS LDFLAGS_MODULE
+export KBUILD_USERCFLAGS KBUILD_USERLDFLAGS
 
 export KBUILD_CPPFLAGS NOSTDINC_FLAGS LINUXINCLUDE OBJCOPYFLAGS KBUILD_LDFLAGS
 export KBUILD_CFLAGS CFLAGS_KERNEL CFLAGS_MODULE
@@ -672,11 +692,13 @@ drivers-y	+= virt/
 libs-y		:= lib/
 endif # KBUILD_EXTMOD
 
+ifndef KBUILD_MIXED_TREE
 # The all: target is the default when no target is given on the
 # command line.
 # This allow a user to issue only 'make' to build a kernel including modules
 # Defaults to vmlinux, but the arch makefile usually adds further targets
 all: vmlinux
+endif
 
 CFLAGS_GCOV	:= -fprofile-arcs -ftest-coverage
 ifdef CONFIG_CC_IS_GCC
@@ -955,7 +977,13 @@ KBUILD_LDFLAGS	+= --thinlto-cache-dir=$(extmod_prefix).thinlto-cache
 else
 CC_FLAGS_LTO	:= -flto
 endif
+
+ifeq ($(SRCARCH),x86)
+# Workaround for compiler / linker bug
 CC_FLAGS_LTO	+= -fvisibility=hidden
+else
+CC_FLAGS_LTO	+= -fvisibility=default
+endif
 
 # Limit inlining across translation units to reduce binary size
 KBUILD_LDFLAGS += -mllvm -import-instr-limit=5
@@ -1150,6 +1178,40 @@ export extmod_prefix = $(if $(KBUILD_EXTMOD),$(KBUILD_EXTMOD)/)
 export MODORDER := $(extmod_prefix)modules.order
 export MODULES_NSDEPS := $(extmod_prefix)modules.nsdeps
 
+# ---------------------------------------------------------------------------
+# Kernel headers
+
+PHONY += headers
+
+#Default location for installed headers
+ifeq ($(KBUILD_EXTMOD),)
+PHONY += archheaders archscripts
+hdr-inst := -f $(srctree)/scripts/Makefile.headersinst obj
+headers: $(version_h) scripts_unifdef uapi-asm-generic archheaders archscripts
+else
+hdr-prefix = $(KBUILD_EXTMOD)/
+hdr-inst := -f $(srctree)/scripts/Makefile.headersinst dst=$(KBUILD_EXTMOD)/usr/include objtree=$(objtree)/$(KBUILD_EXTMOD) obj
+endif
+
+export INSTALL_HDR_PATH = $(objtree)/$(hdr-prefix)usr
+
+quiet_cmd_headers_install = INSTALL $(INSTALL_HDR_PATH)/include
+      cmd_headers_install = \
+	mkdir -p $(INSTALL_HDR_PATH); \
+	rsync -mrl --include='*/' --include='*\.h' --exclude='*' \
+	$(hdr-prefix)usr/include $(INSTALL_HDR_PATH);
+
+PHONY += headers_install
+headers_install: headers
+	$(call cmd,headers_install)
+
+headers:
+ifeq ($(KBUILD_EXTMOD),)
+	$(if $(filter um, $(SRCARCH)), $(error Headers not exportable for UML))
+endif
+	$(Q)$(MAKE) $(hdr-inst)=$(hdr-prefix)include/uapi
+	$(Q)$(MAKE) $(hdr-inst)=$(hdr-prefix)arch/$(SRCARCH)/include/uapi
+
 ifeq ($(KBUILD_EXTMOD),)
 core-y			+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/
 core-$(CONFIG_BLOCK)	+= block/
@@ -1215,8 +1277,10 @@ cmd_link-vmlinux =                                                 \
 	$(CONFIG_SHELL) $< "$(LD)" "$(KBUILD_LDFLAGS)" "$(LDFLAGS_vmlinux)";    \
 	$(if $(ARCH_POSTLINK), $(MAKE) -f $(ARCH_POSTLINK) $@, true)
 
+ifndef KBUILD_MIXED_TREE
 vmlinux: scripts/link-vmlinux.sh autoksyms_recursive $(vmlinux-deps) FORCE
 	+$(call if_changed_dep,link-vmlinux)
+endif
 
 targets := vmlinux
 
@@ -1225,7 +1289,8 @@ targets := vmlinux
 $(sort $(vmlinux-deps) $(subdir-modorder)): descend ;
 
 filechk_kernel.release = \
-	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
+	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
+		$(srctree) $(BRANCH) $(KMI_GENERATION))"
 
 # Store (new) KERNELRELEASE string in include/config/kernel.release
 include/config/kernel.release: FORCE
@@ -1315,32 +1380,6 @@ headerdep:
 	$(Q)find $(srctree)/include/ -name '*.h' | xargs --max-args 1 \
 	$(srctree)/scripts/headerdep.pl -I$(srctree)/include
 
-# ---------------------------------------------------------------------------
-# Kernel headers
-
-#Default location for installed headers
-export INSTALL_HDR_PATH = $(objtree)/usr
-
-quiet_cmd_headers_install = INSTALL $(INSTALL_HDR_PATH)/include
-      cmd_headers_install = \
-	mkdir -p $(INSTALL_HDR_PATH); \
-	rsync -mrl --include='*/' --include='*\.h' --exclude='*' \
-	usr/include $(INSTALL_HDR_PATH)
-
-PHONY += headers_install
-headers_install: headers
-	$(call cmd,headers_install)
-
-PHONY += archheaders archscripts
-
-hdr-inst := -f $(srctree)/scripts/Makefile.headersinst obj
-
-PHONY += headers
-headers: $(version_h) scripts_unifdef uapi-asm-generic archheaders archscripts
-	$(if $(filter um, $(SRCARCH)), $(error Headers not exportable for UML))
-	$(Q)$(MAKE) $(hdr-inst)=include/uapi
-	$(Q)$(MAKE) $(hdr-inst)=arch/$(SRCARCH)/include/uapi
-
 # Deprecated. It is no-op now.
 PHONY += headers_check
 headers_check:
@@ -1426,7 +1465,9 @@ kselftest-merge:
 # Devicetree files
 
 ifneq ($(wildcard $(srctree)/arch/$(SRCARCH)/boot/dts/),)
-dtstree := arch/$(SRCARCH)/boot/dts
+# ANDROID: allow this to be overridden by the build environment. This allows
+# one to compile a device tree that is located out-of-tree.
+dtstree ?= arch/$(SRCARCH)/boot/dts
 endif
 
 ifneq ($(dtstree),)
@@ -1492,7 +1533,9 @@ endif
 # using awk while concatenating to the final file.
 
 PHONY += modules
-modules: $(if $(KBUILD_BUILTIN),vmlinux) modules_check modules_prepare
+# if KBUILD_BUILTIN && !KBUILD_MIXED_TREE, depend on vmlinux
+modules: $(if $(KBUILD_BUILTIN), $(if $(KBUILD_MIXED_TREE),,vmlinux))
+modules: modules_check modules_prepare
 
 cmd_modules_order = $(AWK) '!x[$$0]++' $(real-prereqs) > $@
 
@@ -1537,8 +1580,8 @@ __modinst_pre:
 		ln -s $(CURDIR) $(MODLIB)/build ; \
 	fi
 	@sed 's:^:kernel/:' modules.order > $(MODLIB)/modules.order
-	@cp -f modules.builtin $(MODLIB)/
-	@cp -f $(objtree)/modules.builtin.modinfo $(MODLIB)/
+	@cp -f $(mixed-build-prefix)modules.builtin $(MODLIB)/
+	@cp -f $(or $(mixed-build-prefix),$(objtree)/)modules.builtin.modinfo $(MODLIB)/
 
 endif # CONFIG_MODULES
 
@@ -1799,6 +1842,8 @@ help:
 	@echo  ''
 	@echo  '  modules         - default target, build the module(s)'
 	@echo  '  modules_install - install the module'
+	@echo  '  headers_install - Install sanitised kernel headers to INSTALL_HDR_PATH'
+	@echo  '                    (default: $(abspath $(INSTALL_HDR_PATH)))'
 	@echo  '  clean           - remove generated files in module directory only'
 	@echo  ''
 
@@ -1823,7 +1868,7 @@ modules_check: $(MODORDER)
 
 quiet_cmd_depmod = DEPMOD  $(MODLIB)
       cmd_depmod = $(CONFIG_SHELL) $(srctree)/scripts/depmod.sh $(DEPMOD) \
-                   $(KERNELRELEASE)
+                   $(KERNELRELEASE) $(mixed-build-prefix)
 
 modules_install:
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modinst
@@ -1860,7 +1905,8 @@ ifdef single-build
 
 # .ko is special because modpost is needed
 single-ko := $(sort $(filter %.ko, $(MAKECMDGOALS)))
-single-no-ko := $(sort $(patsubst %.ko,%.mod, $(MAKECMDGOALS)))
+single-no-ko := $(filter-out $(single-ko), $(MAKECMDGOALS)) \
+		$(foreach x, o mod, $(patsubst %.ko, %.$x, $(single-ko)))
 
 $(single-ko): single_modpost
 	@:
@@ -1902,7 +1948,7 @@ descend: $(build-dirs)
 $(build-dirs): prepare
 	$(Q)$(MAKE) $(build)=$@ \
 	single-build=$(if $(filter-out $@/, $(filter $@/%, $(KBUILD_SINGLE_TARGETS))),1) \
-	need-builtin=1 need-modorder=1
+	$(if $(KBUILD_MIXED_TREE),,need-builtin=1) need-modorder=1
 
 clean-dirs := $(addprefix _clean_, $(clean-dirs))
 PHONY += $(clean-dirs) clean
@@ -1911,12 +1957,14 @@ $(clean-dirs):
 
 clean: $(clean-dirs)
 	$(call cmd,rmfiles)
-	@find $(if $(KBUILD_EXTMOD), $(KBUILD_EXTMOD), .) $(RCS_FIND_IGNORE) \
+	@find $(if $(KBUILD_EXTMOD), $(KBUILD_EXTMOD), .) \
+		$(if $(filter-out arch/$(SRCARCH)/boot/dts, $(dtstree)), $(dtstree)) \
+		$(RCS_FIND_IGNORE) \
 		\( -name '*.[aios]' -o -name '*.ko' -o -name '.*.cmd' \
 		-o -name '*.ko.*' \
 		-o -name '*.dtb' -o -name '*.dtbo' -o -name '*.dtb.S' -o -name '*.dt.yaml' \
 		-o -name '*.dwo' -o -name '*.lst' \
-		-o -name '*.su' -o -name '*.mod' \
+		-o -name '*.su' -o -name '*.mod' -o -name '*.usyms' \
 		-o -name '.*.d' -o -name '.*.tmp' -o -name '*.mod.c' \
 		-o -name '*.lex.c' -o -name '*.tab.[ch]' \
 		-o -name '*.asn1.[ch]' \
@@ -2007,7 +2055,8 @@ checkstack:
 	$(PERL) $(srctree)/scripts/checkstack.pl $(CHECKSTACK_ARCH)
 
 kernelrelease:
-	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
+	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
+		$(srctree) $(BRANCH) $(KMI_GENERATION))"
 
 kernelversion:
 	@echo $(KERNELVERSION)

@@ -78,6 +78,7 @@
 #include <linux/capability.h>
 #include <linux/user_namespace.h>
 #include <linux/indirect_call_wrapper.h>
+#include <trace/hooks/net.h>
 
 #include "datagram.h"
 #include "sock_destructor.h"
@@ -772,6 +773,7 @@ void kfree_skb_reason(struct sk_buff *skb, enum skb_drop_reason reason)
 	if (!skb_unref(skb))
 		return;
 
+	trace_android_vh_kfree_skb(skb);
 	trace_kfree_skb(skb, __builtin_return_address(0), reason);
 	__kfree_skb(skb);
 }

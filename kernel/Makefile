@@ -41,9 +41,6 @@ KCSAN_SANITIZE_kcov.o := n
 UBSAN_SANITIZE_kcov.o := n
 CFLAGS_kcov.o := $(call cc-option, -fno-conserve-stack) -fno-stack-protector
 
-# Don't instrument error handlers
-CFLAGS_REMOVE_cfi.o := $(CC_FLAGS_CFI)
-
 obj-y += sched/
 obj-y += locking/
 obj-y += power/
@@ -69,6 +66,7 @@ obj-$(CONFIG_UID16) += uid16.o
 obj-$(CONFIG_MODULES) += module.o
 obj-$(CONFIG_MODULE_SIG) += module_signing.o
 obj-$(CONFIG_MODULE_SIG_FORMAT) += module_signature.o
+obj-$(CONFIG_MODULE_SIG_PROTECT) += gki_module.o
 obj-$(CONFIG_KALLSYMS) += kallsyms.o
 obj-$(CONFIG_BSD_PROCESS_ACCT) += acct.o
 obj-$(CONFIG_CRASH_CORE) += crash_core.o
@@ -160,3 +158,28 @@ $(obj)/kheaders_data.tar.xz: FORCE
 	$(call cmd,genikh)
 
 clean-files := kheaders_data.tar.xz kheaders.md5
+
+#
+# ANDROID: GKI: Generate headerfiles required for gki_module.o
+#
+# Dependencies on generated files need to be listed explicitly
+$(obj)/gki_module.o: $(obj)/gki_module_protected_exports.h \
+			$(obj)/gki_module_unprotected.h
+
+ALL_KMI_SYMBOLS := all_kmi_symbols
+
+$(obj)/gki_module_unprotected.h: $(ALL_KMI_SYMBOLS) \
+				$(srctree)/scripts/gen_gki_modules_headers.sh
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/gen_gki_modules_headers.sh $@ \
+	"$(srctree)" \
+	$(ALL_KMI_SYMBOLS)
+
+# Generate symbol list with union of all symbol list for arm64; empty for others
+$(ALL_KMI_SYMBOLS): $(if $(filter arm64,$(ARCH)),$(wildcard $(srctree)/android/abi_gki_aarch64_*),)
+	$(if $(strip $^),cat $^ > $(ALL_KMI_SYMBOLS), echo "" > $(ALL_KMI_SYMBOLS))
+
+$(obj)/gki_module_protected_exports.h: $(srctree)/android/abi_gki_protected_exports \
+				$(srctree)/scripts/gen_gki_modules_headers.sh
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/gen_gki_modules_headers.sh $@ \
+	"$(srctree)" \
+	$<

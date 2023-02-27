@@ -63,6 +63,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
 
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/module.h>
+#include <trace/hooks/memory.h>
+
 #ifndef ARCH_SHF_SMALL
 #define ARCH_SHF_SMALL 0
 #endif
@@ -267,7 +271,7 @@ static void module_assert_mutex_or_preempt(void)
 #endif
 }
 
-#ifdef CONFIG_MODULE_SIG
+#if defined(CONFIG_MODULE_SIG) && !defined(CONFIG_MODULE_SIG_PROTECT)
 static bool sig_enforce = IS_ENABLED(CONFIG_MODULE_SIG_FORCE);
 module_param(sig_enforce, bool_enable_only, 0644);
 
@@ -743,6 +747,7 @@ static struct module_attribute modinfo_##field = {                    \
 
 MODINFO_ATTR(version);
 MODINFO_ATTR(srcversion);
+MODINFO_ATTR(scmversion);
 
 static char last_unloaded_module[MODULE_NAME_LEN+1];
 
@@ -1206,6 +1211,7 @@ static struct module_attribute *modinfo_attrs[] = {
 	&module_uevent,
 	&modinfo_version,
 	&modinfo_srcversion,
+	&modinfo_scmversion,
 	&modinfo_initstate,
 	&modinfo_coresize,
 	&modinfo_initsize,
@@ -1431,6 +1437,21 @@ static const struct kernel_symbol *resolve_symbol(struct module *mod,
 	err = verify_namespace_is_imported(info, fsa.sym, mod);
 	if (err) {
 		fsa.sym = ERR_PTR(err);
+		goto getname;
+	}
+
+	/*
+	 * ANDROID: GKI:
+	 * In case of an unsigned module symbol resolves only if:
+	 * 1. Symbol is in the list of unprotected symbol list OR
+	 * 2. If symbol owner is not NULL i.e. owner is another module;
+	 *    it has to be an unsigned module and not signed GKI module
+	 *    to protect symbols exported by signed GKI modules.
+	 */
+	if (!mod->sig_ok &&
+	    !gki_is_module_unprotected_symbol(name) &&
+	    fsa.owner && fsa.owner->sig_ok) {
+		fsa.sym = ERR_PTR(-EACCES);
 		goto getname;
 	}
 
@@ -2200,6 +2221,10 @@ static void free_module(struct module *mod)
 
 	/* This may be empty, but that's OK */
 	module_arch_freeing_init(mod);
+	trace_android_vh_set_memory_rw((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
+	trace_android_vh_set_memory_nx((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
 	module_memfree(mod->init_layout.base);
 	kfree(mod->args);
 	percpu_modfree(mod);
@@ -2208,6 +2233,10 @@ static void free_module(struct module *mod)
 	lockdep_free_key_range(mod->core_layout.base, mod->core_layout.size);
 
 	/* Finally, free the core (containing the module structure) */
+	trace_android_vh_set_memory_rw((unsigned long)mod->core_layout.base,
+		(mod->core_layout.size)>>PAGE_SHIFT);
+	trace_android_vh_set_memory_nx((unsigned long)mod->core_layout.base,
+		(mod->core_layout.size)>>PAGE_SHIFT);
 	module_memfree(mod->core_layout.base);
 }
 
@@ -2253,6 +2282,14 @@ static int verify_exported_symbols(struct module *mod)
 				.name	= kernel_symbol_name(s),
 				.gplok	= true,
 			};
+
+			if (!mod->sig_ok && gki_is_module_protected_export(
+						kernel_symbol_name(s))) {
+				pr_err("%s: exports protected symbol %s\n",
+				       mod->name, kernel_symbol_name(s));
+				return -EACCES;
+			}
+
 			if (find_symbol(&fsa)) {
 				pr_err("%s: exports duplicate symbol %s"
 				       " (owned by %s)\n",
@@ -2333,9 +2370,15 @@ static int simplify_symbols(struct module *mod, const struct load_info *info)
 			     ignore_undef_symbol(info->hdr->e_machine, name)))
 				break;
 
-			ret = PTR_ERR(ksym) ?: -ENOENT;
-			pr_warn("%s: Unknown symbol %s (err %d)\n",
-				mod->name, name, ret);
+			if (PTR_ERR(ksym) == -EACCES) {
+				ret = -EACCES;
+				pr_warn("%s: Protected symbol: %s (err %d)\n",
+					mod->name, name, ret);
+			} else {
+				ret = PTR_ERR(ksym) ?: -ENOENT;
+				pr_warn("%s: Unknown symbol %s (err %d)\n",
+					mod->name, name, ret);
+			}
 			break;
 
 		default:
@@ -2931,7 +2974,15 @@ static int module_sig_check(struct load_info *info, int flags)
 		return -EKEYREJECTED;
 	}
 
+/*
+ * ANDROID: GKI: Do not prevent loading of unsigned modules;
+ * as all modules except GKI modules are not signed.
+ */
+#ifndef CONFIG_MODULE_SIG_PROTECT
 	return security_locked_down(LOCKDOWN_MODULE_SIGNATURE);
+#else
+	return 0;
+#endif
 }
 #else /* !CONFIG_MODULE_SIG */
 static int module_sig_check(struct load_info *info, int flags)
@@ -3624,7 +3675,15 @@ static void module_deallocate(struct module *mod, struct load_info *info)
 {
 	percpu_modfree(mod);
 	module_arch_freeing_init(mod);
+	trace_android_vh_set_memory_rw((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
+	trace_android_vh_set_memory_nx((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
 	module_memfree(mod->init_layout.base);
+	trace_android_vh_set_memory_rw((unsigned long)mod->core_layout.base,
+		(mod->core_layout.size)>>PAGE_SHIFT);
+	trace_android_vh_set_memory_nx((unsigned long)mod->core_layout.base,
+		(mod->core_layout.size)>>PAGE_SHIFT);
 	module_memfree(mod->core_layout.base);
 }
 
@@ -3768,8 +3827,13 @@ static noinline int do_init_module(struct module *mod)
 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
 #endif
 	module_enable_ro(mod, true);
+	trace_android_vh_set_module_permit_after_init(mod);
 	mod_tree_remove_init(mod);
 	module_arch_freeing_init(mod);
+	trace_android_vh_set_memory_rw((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
+	trace_android_vh_set_memory_nx((unsigned long)mod->init_layout.base,
+		(mod->init_layout.size)>>PAGE_SHIFT);
 	mod->init_layout.base = NULL;
 	mod->init_layout.size = 0;
 	mod->init_layout.ro_size = 0;
@@ -3895,6 +3959,7 @@ static int complete_formation(struct module *mod, struct load_info *info)
 	module_enable_ro(mod, false);
 	module_enable_nx(mod);
 	module_enable_x(mod);
+	trace_android_vh_set_module_permit_before_init(mod);
 
 	/*
 	 * Mark state as coming so strong_try_module_get() ignores us,
@@ -4033,6 +4098,8 @@ static int load_module(struct load_info *info, const char __user *uargs,
 			       "kernel\n", mod->name);
 		add_taint_module(mod, TAINT_UNSIGNED_MODULE, LOCKDEP_STILL_OK);
 	}
+#else
+	mod->sig_ok = 0;
 #endif
 
 	/* To avoid stressing percpu allocator, do this once we're unique. */
@@ -4794,6 +4861,22 @@ void print_modules(void)
 		pr_cont(" [last unloaded: %s]", last_unloaded_module);
 	pr_cont("\n");
 }
+
+#ifdef CONFIG_ANDROID_DEBUG_SYMBOLS
+void android_debug_for_each_module(int (*fn)(const char *mod_name, void *mod_addr, void *data),
+	void *data)
+{
+	struct module *module;
+	preempt_disable();
+	list_for_each_entry_rcu(module, &modules, list) {
+		if (fn(module->name, module->core_layout.base, data))
+			goto out;
+	}
+out:
+	preempt_enable();
+}
+EXPORT_SYMBOL_NS_GPL(android_debug_for_each_module, MINIDUMP);
+#endif
 
 #ifdef CONFIG_MODVERSIONS
 /*

@@ -37,7 +37,7 @@ struct vgic_global kvm_vgic_global_state __ro_after_init = {
  * If you need to take multiple locks, always take the upper lock first,
  * then the lower ones, e.g. first take the its_lock, then the irq_lock.
  * If you are already holding a lock and need to take a higher one, you
- * have to drop the lower ranking lock first and re-aquire it after having
+ * have to drop the lower ranking lock first and re-acquire it after having
  * taken the upper one.
  *
  * When taking more than one ap_list_lock at the same time, always take the
@@ -931,26 +931,15 @@ void kvm_vgic_load(struct kvm_vcpu *vcpu)
 		vgic_v3_load(vcpu);
 }
 
-void kvm_vgic_put(struct kvm_vcpu *vcpu)
+void kvm_vgic_put(struct kvm_vcpu *vcpu, bool blocking)
 {
 	if (unlikely(!vgic_initialized(vcpu->kvm)))
 		return;
 
 	if (kvm_vgic_global_state.type == VGIC_V2)
-		vgic_v2_put(vcpu);
+		vgic_v2_put(vcpu, blocking);
 	else
-		vgic_v3_put(vcpu);
-}
-
-void kvm_vgic_vmcr_sync(struct kvm_vcpu *vcpu)
-{
-	if (unlikely(!irqchip_in_kernel(vcpu->kvm)))
-		return;
-
-	if (kvm_vgic_global_state.type == VGIC_V2)
-		vgic_v2_vmcr_sync(vcpu);
-	else
-		vgic_v3_vmcr_sync(vcpu);
+		vgic_v3_put(vcpu, blocking);
 }
 
 int kvm_vgic_vcpu_pending_irq(struct kvm_vcpu *vcpu)
@@ -990,7 +979,7 @@ int kvm_vgic_vcpu_pending_irq(struct kvm_vcpu *vcpu)
 void vgic_kick_vcpus(struct kvm *kvm)
 {
 	struct kvm_vcpu *vcpu;
-	int c;
+	unsigned long c;
 
 	/*
 	 * We've injected an interrupt, time to find out who deserves

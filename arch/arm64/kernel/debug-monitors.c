@@ -28,7 +28,7 @@
 u8 debug_monitors_arch(void)
 {
 	return cpuid_feature_extract_unsigned_field(read_sanitised_ftr_reg(SYS_ID_AA64DFR0_EL1),
-						ID_AA64DFR0_DEBUGVER_SHIFT);
+						ID_AA64DFR0_EL1_DebugVer_SHIFT);
 }
 
 /*
@@ -283,21 +283,25 @@ void register_user_break_hook(struct break_hook *hook)
 {
 	register_debug_hook(&hook->node, &user_break_hook);
 }
+EXPORT_SYMBOL_GPL(register_user_break_hook);
 
 void unregister_user_break_hook(struct break_hook *hook)
 {
 	unregister_debug_hook(&hook->node);
 }
+EXPORT_SYMBOL_GPL(unregister_user_break_hook);
 
 void register_kernel_break_hook(struct break_hook *hook)
 {
 	register_debug_hook(&hook->node, &kernel_break_hook);
 }
+EXPORT_SYMBOL_GPL(register_kernel_break_hook);
 
 void unregister_kernel_break_hook(struct break_hook *hook)
 {
 	unregister_debug_hook(&hook->node);
 }
+EXPORT_SYMBOL_GPL(unregister_kernel_break_hook);
 
 static int call_break_hook(struct pt_regs *regs, unsigned long esr)
 {

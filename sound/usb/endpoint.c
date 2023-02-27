@@ -13,6 +13,8 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 
+#include <trace/hooks/audio_usboffload.h>
+
 #include "usbaudio.h"
 #include "helper.h"
 #include "card.h"
@@ -818,6 +820,7 @@ snd_usb_endpoint_open(struct snd_usb_audio *chip,
 	mutex_unlock(&chip->mutex);
 	return ep;
 }
+EXPORT_SYMBOL_GPL(snd_usb_endpoint_open);
 
 /*
  * snd_usb_endpoint_set_sync: Link data and sync endpoints
@@ -902,6 +905,7 @@ void snd_usb_endpoint_close(struct snd_usb_audio *chip,
 	}
 	mutex_unlock(&chip->mutex);
 }
+EXPORT_SYMBOL_GPL(snd_usb_endpoint_close);
 
 /* Prepare for suspening EP, called from the main suspend handler */
 void snd_usb_endpoint_suspend(struct snd_usb_endpoint *ep)
@@ -1404,6 +1408,7 @@ unlock:
 	mutex_unlock(&chip->mutex);
 	return err;
 }
+EXPORT_SYMBOL_GPL(snd_usb_endpoint_configure);
 
 /* get the current rate set to the given clock by any endpoint */
 int snd_usb_endpoint_get_clock_rate(struct snd_usb_audio *chip, int clock)
@@ -1480,6 +1485,8 @@ int snd_usb_endpoint_start(struct snd_usb_endpoint *ep)
 		i = 0;
 		goto fill_rest;
 	}
+
+	trace_android_vh_audio_usb_offload_ep_action(ep, true);
 
 	for (i = 0; i < ep->nurbs; i++) {
 		struct urb *urb = ep->urb[i].urb;
@@ -1566,6 +1573,7 @@ void snd_usb_endpoint_stop(struct snd_usb_endpoint *ep, bool keep_pending)
 		if (ep->sync_source)
 			WRITE_ONCE(ep->sync_source->sync_sink, NULL);
 		stop_urbs(ep, false, keep_pending);
+		trace_android_vh_audio_usb_offload_ep_action(ep, false);
 	}
 }
 

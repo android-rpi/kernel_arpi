@@ -166,7 +166,7 @@ static inline struct page *
 alloc_zeroed_user_highpage_movable(struct vm_area_struct *vma,
 				   unsigned long vaddr)
 {
-	struct page *page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vaddr);
+	struct page *page = alloc_page_vma(GFP_HIGHUSER_MOVABLE | __GFP_CMA, vma, vaddr);
 
 	if (page)
 		clear_user_highpage(page, vaddr);
@@ -180,6 +180,16 @@ static inline void clear_highpage(struct page *page)
 	void *kaddr = kmap_atomic(page);
 	clear_page(kaddr);
 	kunmap_atomic(kaddr);
+}
+
+static inline void clear_highpage_kasan_tagged(struct page *page)
+{
+	u8 tag;
+
+	tag = page_kasan_tag(page);
+	page_kasan_tag_reset(page);
+	clear_highpage(page);
+	page_kasan_tag_set(page, tag);
 }
 
 #ifndef __HAVE_ARCH_TAG_CLEAR_HIGHPAGE

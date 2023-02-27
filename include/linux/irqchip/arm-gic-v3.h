@@ -127,6 +127,8 @@
 #define GICR_PIDR2			GICD_PIDR2
 
 #define GICR_CTLR_ENABLE_LPIS		(1UL << 0)
+#define GICR_CTLR_CES			(1UL << 1)
+#define GICR_CTLR_IR			(1UL << 2)
 #define GICR_CTLR_RWP			(1UL << 3)
 
 #define GICR_TYPER_CPU_NUMBER(r)	(((r) >> 8) & 0xffff)
@@ -637,6 +639,20 @@ int its_init(struct fwnode_handle *handle, struct rdists *rdists,
 	     struct irq_domain *domain);
 int mbi_init(struct fwnode_handle *fwnode, struct irq_domain *parent);
 
+struct gic_chip_data {
+	struct fwnode_handle	*fwnode;
+	void __iomem		*dist_base;
+	struct redist_region	*redist_regions;
+	struct rdists		rdists;
+	struct irq_domain	*domain;
+	u64			redist_stride;
+	u32			nr_redist_regions;
+	u64			flags;
+	bool			has_rss;
+	unsigned int		ppi_nr;
+	struct partition_desc	**ppi_descs;
+};
+
 static inline bool gic_enable_sre(void)
 {
 	u32 val;
@@ -651,6 +667,8 @@ static inline bool gic_enable_sre(void)
 
 	return !!(val & ICC_SRE_EL1_SRE);
 }
+
+void gic_resume(void);
 
 #endif
 

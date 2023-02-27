@@ -196,13 +196,13 @@ static inline void __uaccess_enable_tco(void)
  */
 static inline void __uaccess_disable_tco_async(void)
 {
-	if (system_uses_mte_async_mode())
+	if (system_uses_mte_async_or_asymm_mode())
 		 __uaccess_disable_tco();
 }
 
 static inline void __uaccess_enable_tco_async(void)
 {
-	if (system_uses_mte_async_mode())
+	if (system_uses_mte_async_or_asymm_mode())
 		__uaccess_enable_tco();
 }
 
@@ -494,5 +494,20 @@ static inline int __copy_from_user_flushcache(void *dst, const void __user *src,
 	return __copy_user_flushcache(dst, __uaccess_mask_ptr(src), size);
 }
 #endif
+
+#ifdef CONFIG_ARCH_HAS_SUBPAGE_FAULTS
+
+/*
+ * Return 0 on success, the number of bytes not probed otherwise.
+ */
+static inline size_t probe_subpage_writeable(const char __user *uaddr,
+					     size_t size)
+{
+	if (!system_supports_mte())
+		return 0;
+	return mte_probe_user_range(uaddr, size);
+}
+
+#endif /* CONFIG_ARCH_HAS_SUBPAGE_FAULTS */
 
 #endif /* __ASM_UACCESS_H */

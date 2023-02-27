@@ -5,7 +5,7 @@
  * Copyright 2008 Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright 2016	Intel Deutschland GmbH
- * Copyright (C) 2018-2021 Intel Corporation
+ * Copyright (C) 2018-2022 Intel Corporation
  */
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -403,22 +403,20 @@ static int
 cfg80211_add_nontrans_list(struct cfg80211_bss *trans_bss,
 			   struct cfg80211_bss *nontrans_bss)
 {
-	const u8 *ssid;
-	size_t ssid_len;
+	const struct element *ssid_elem;
 	struct cfg80211_bss *bss = NULL;
 
 	rcu_read_lock();
-	ssid = ieee80211_bss_get_ie(nontrans_bss, WLAN_EID_SSID);
-	if (!ssid) {
+	ssid_elem = ieee80211_bss_get_elem(nontrans_bss, WLAN_EID_SSID);
+	if (!ssid_elem) {
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	ssid_len = ssid[1];
-	ssid = ssid + 2;
 
 	/* check if nontrans_bss is in the list */
 	list_for_each_entry(bss, &trans_bss->nontrans_list, nontrans_list) {
-		if (is_bss(bss, nontrans_bss->bssid, ssid, ssid_len)) {
+		if (is_bss(bss, nontrans_bss->bssid, ssid_elem->data,
+			   ssid_elem->datalen)) {
 			rcu_read_unlock();
 			return 0;
 		}
@@ -548,7 +546,7 @@ static int cfg80211_parse_ap_info(struct cfg80211_colocated_ap *entry,
 	memcpy(entry->bssid, pos, ETH_ALEN);
 	pos += ETH_ALEN;
 
-	if (length == IEEE80211_TBTT_INFO_OFFSET_BSSID_SSSID_BSS_PARAM) {
+	if (length >= IEEE80211_TBTT_INFO_OFFSET_BSSID_SSSID_BSS_PARAM) {
 		memcpy(&entry->short_ssid, pos,
 		       sizeof(entry->short_ssid));
 		entry->short_ssid_valid = true;
@@ -2256,7 +2254,8 @@ cfg80211_update_notlisted_nontrans(struct wiphy *wiphy,
 				   struct ieee80211_mgmt *mgmt, size_t len)
 {
 	u8 *ie, *new_ie, *pos;
-	const u8 *nontrans_ssid, *trans_ssid, *mbssid;
+	const struct element *nontrans_ssid;
+	const u8 *trans_ssid, *mbssid;
 	size_t ielen = len - offsetof(struct ieee80211_mgmt,
 				      u.probe_resp.variable);
 	size_t new_ie_len;
@@ -2283,11 +2282,11 @@ cfg80211_update_notlisted_nontrans(struct wiphy *wiphy,
 		return;
 	new_ie_len -= mbssid[1];
 
-	nontrans_ssid = ieee80211_bss_get_ie(nontrans_bss, WLAN_EID_SSID);
+	nontrans_ssid = ieee80211_bss_get_elem(nontrans_bss, WLAN_EID_SSID);
 	if (!nontrans_ssid)
 		return;
 
-	new_ie_len += nontrans_ssid[1];
+	new_ie_len += nontrans_ssid->datalen;
 
 	/* generate new ie for nontrans BSS
 	 * 1. replace SSID with nontrans BSS' SSID
@@ -2304,7 +2303,7 @@ cfg80211_update_notlisted_nontrans(struct wiphy *wiphy,
 	pos = new_ie;
 
 	/* copy the nontransmitted SSID */
-	cpy_len = nontrans_ssid[1] + 2;
+	cpy_len = nontrans_ssid->datalen + 2;
 	memcpy(pos, nontrans_ssid, cpy_len);
 	pos += cpy_len;
 	/* copy the IEs between SSID and MBSSID */
@@ -2598,7 +2597,8 @@ void cfg80211_bss_iter(struct wiphy *wiphy,
 	spin_lock_bh(&rdev->bss_lock);
 
 	list_for_each_entry(bss, &rdev->bss_list, list) {
-		if (!chandef || cfg80211_is_sub_chan(chandef, bss->pub.channel))
+		if (!chandef || cfg80211_is_sub_chan(chandef, bss->pub.channel,
+						     false))
 			iter(wiphy, &bss->pub, iter_data);
 	}
 
@@ -2607,11 +2607,12 @@ void cfg80211_bss_iter(struct wiphy *wiphy,
 EXPORT_SYMBOL(cfg80211_bss_iter);
 
 void cfg80211_update_assoc_bss_entry(struct wireless_dev *wdev,
+				     unsigned int link_id,
 				     struct ieee80211_channel *chan)
 {
 	struct wiphy *wiphy = wdev->wiphy;
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
-	struct cfg80211_internal_bss *cbss = wdev->current_bss;
+	struct cfg80211_internal_bss *cbss = wdev->links[link_id].client.current_bss;
 	struct cfg80211_internal_bss *new = NULL;
 	struct cfg80211_internal_bss *bss;
 	struct cfg80211_bss *nontrans_bss;
@@ -2716,7 +2717,7 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 	struct cfg80211_registered_device *rdev;
 	struct wiphy *wiphy;
 	struct iw_scan_req *wreq = NULL;
-	struct cfg80211_scan_request *creq = NULL;
+	struct cfg80211_scan_request *creq;
 	int i, err, n_channels = 0;
 	enum nl80211_band band;
 
@@ -2731,10 +2732,8 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 	if (IS_ERR(rdev))
 		return PTR_ERR(rdev);
 
-	if (rdev->scan_req || rdev->scan_msg) {
-		err = -EBUSY;
-		goto out;
-	}
+	if (rdev->scan_req || rdev->scan_msg)
+		return -EBUSY;
 
 	wiphy = &rdev->wiphy;
 
@@ -2747,10 +2746,8 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 	creq = kzalloc(sizeof(*creq) + sizeof(struct cfg80211_ssid) +
 		       n_channels * sizeof(void *),
 		       GFP_ATOMIC);
-	if (!creq) {
-		err = -ENOMEM;
-		goto out;
-	}
+	if (!creq)
+		return -ENOMEM;
 
 	creq->wiphy = wiphy;
 	creq->wdev = dev->ieee80211_ptr;

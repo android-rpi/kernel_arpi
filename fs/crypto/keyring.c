@@ -79,10 +79,9 @@ void fscrypt_put_master_key(struct fscrypt_master_key *mk)
 	call_rcu(&mk->mk_rcu_head, fscrypt_free_master_key);
 }
 
-void fscrypt_put_master_key_activeref(struct fscrypt_master_key *mk)
+void fscrypt_put_master_key_activeref(struct super_block *sb,
+				      struct fscrypt_master_key *mk)
 {
-	struct super_block *sb = mk->mk_sb;
-	struct fscrypt_keyring *keyring = sb->s_master_keys;
 	size_t i;
 
 	if (!refcount_dec_and_test(&mk->mk_active_refs))
@@ -93,9 +92,9 @@ void fscrypt_put_master_key_activeref(struct fscrypt_master_key *mk)
 	 * destroying any subkeys embedded in it.
 	 */
 
-	spin_lock(&keyring->lock);
+	spin_lock(&sb->s_master_keys->lock);
 	hlist_del_rcu(&mk->mk_node);
-	spin_unlock(&keyring->lock);
+	spin_unlock(&sb->s_master_keys->lock);
 
 	/*
 	 * ->mk_active_refs == 0 implies that ->mk_secret is not present and
@@ -105,9 +104,12 @@ void fscrypt_put_master_key_activeref(struct fscrypt_master_key *mk)
 	WARN_ON(!list_empty(&mk->mk_decrypted_inodes));
 
 	for (i = 0; i <= FSCRYPT_MODE_MAX; i++) {
-		fscrypt_destroy_prepared_key(&mk->mk_direct_keys[i]);
-		fscrypt_destroy_prepared_key(&mk->mk_iv_ino_lblk_64_keys[i]);
-		fscrypt_destroy_prepared_key(&mk->mk_iv_ino_lblk_32_keys[i]);
+		fscrypt_destroy_prepared_key(
+				sb, &mk->mk_direct_keys[i]);
+		fscrypt_destroy_prepared_key(
+				sb, &mk->mk_iv_ino_lblk_64_keys[i]);
+		fscrypt_destroy_prepared_key(
+				sb, &mk->mk_iv_ino_lblk_32_keys[i]);
 	}
 	memzero_explicit(&mk->mk_ino_hash_key,
 			 sizeof(mk->mk_ino_hash_key));
@@ -128,11 +130,11 @@ static int fscrypt_user_key_instantiate(struct key *key,
 					struct key_preparsed_payload *prep)
 {
 	/*
-	 * We just charge FSCRYPT_MAX_KEY_SIZE bytes to the user's key quota for
-	 * each key, regardless of the exact key size.  The amount of memory
-	 * actually used is greater than the size of the raw key anyway.
+	 * We just charge FSCRYPT_MAX_STANDARD_KEY_SIZE bytes to the user's key
+	 * quota for each key, regardless of the exact key size.  The amount of
+	 * memory actually used is greater than the size of the raw key anyway.
 	 */
-	return key_payload_reserve(key, FSCRYPT_MAX_KEY_SIZE);
+	return key_payload_reserve(key, FSCRYPT_MAX_STANDARD_KEY_SIZE);
 }
 
 static void fscrypt_user_key_describe(const struct key *key, struct seq_file *m)
@@ -240,7 +242,7 @@ void fscrypt_destroy_keyring(struct super_block *sb)
 			WARN_ON(refcount_read(&mk->mk_struct_refs) != 1);
 			WARN_ON(!is_master_key_secret_present(&mk->mk_secret));
 			wipe_master_key_secret(&mk->mk_secret);
-			fscrypt_put_master_key_activeref(mk);
+			fscrypt_put_master_key_activeref(sb, mk);
 		}
 	}
 	kfree_sensitive(keyring);
@@ -421,7 +423,6 @@ static int add_new_master_key(struct super_block *sb,
 	if (!mk)
 		return -ENOMEM;
 
-	mk->mk_sb = sb;
 	init_rwsem(&mk->mk_sem);
 	refcount_set(&mk->mk_struct_refs, 1);
 	mk->mk_spec = *mk_spec;
@@ -534,20 +535,36 @@ static int add_master_key(struct super_block *sb,
 	int err;
 
 	if (key_spec->type == FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER) {
-		err = fscrypt_init_hkdf(&secret->hkdf, secret->raw,
-					secret->size);
+		u8 sw_secret[BLK_CRYPTO_SW_SECRET_SIZE];
+		u8 *kdf_key = secret->raw;
+		unsigned int kdf_key_size = secret->size;
+		u8 keyid_kdf_ctx = HKDF_CONTEXT_KEY_IDENTIFIER;
+
+		/*
+		 * For standard keys, the fscrypt master key is used directly as
+		 * the fscrypt KDF key.  For hardware-wrapped keys, we have to
+		 * pass the master key to the hardware to derive the KDF key,
+		 * which is then only used to derive non-file-contents subkeys.
+		 */
+		if (secret->is_hw_wrapped) {
+			err = fscrypt_derive_sw_secret(sb, secret->raw,
+						       secret->size, sw_secret);
+			if (err)
+				return err;
+			kdf_key = sw_secret;
+			kdf_key_size = sizeof(sw_secret);
+		}
+		err = fscrypt_init_hkdf(&secret->hkdf, kdf_key, kdf_key_size);
+		/*
+		 * Now that the KDF context is initialized, the raw KDF key is
+		 * no longer needed.
+		 */
+		memzero_explicit(kdf_key, kdf_key_size);
 		if (err)
 			return err;
 
-		/*
-		 * Now that the HKDF context is initialized, the raw key is no
-		 * longer needed.
-		 */
-		memzero_explicit(secret->raw, secret->size);
-
 		/* Calculate the key identifier */
-		err = fscrypt_hkdf_expand(&secret->hkdf,
-					  HKDF_CONTEXT_KEY_IDENTIFIER, NULL, 0,
+		err = fscrypt_hkdf_expand(&secret->hkdf, keyid_kdf_ctx, NULL, 0,
 					  key_spec->u.identifier,
 					  FSCRYPT_KEY_IDENTIFIER_SIZE);
 		if (err)
@@ -561,7 +578,7 @@ static int fscrypt_provisioning_key_preparse(struct key_preparsed_payload *prep)
 	const struct fscrypt_provisioning_key_payload *payload = prep->data;
 
 	if (prep->datalen < sizeof(*payload) + FSCRYPT_MIN_KEY_SIZE ||
-	    prep->datalen > sizeof(*payload) + FSCRYPT_MAX_KEY_SIZE)
+	    prep->datalen > sizeof(*payload) + FSCRYPT_MAX_ANY_KEY_SIZE)
 		return -EINVAL;
 
 	if (payload->type != FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR &&
@@ -710,15 +727,30 @@ int fscrypt_ioctl_add_key(struct file *filp, void __user *_uarg)
 		return -EACCES;
 
 	memset(&secret, 0, sizeof(secret));
+
+	if (arg.__flags) {
+		if (arg.__flags & ~__FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED)
+			return -EINVAL;
+		if (arg.key_spec.type != FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER)
+			return -EINVAL;
+		secret.is_hw_wrapped = true;
+	}
+
 	if (arg.key_id) {
 		if (arg.raw_size != 0)
 			return -EINVAL;
 		err = get_keyring_key(arg.key_id, arg.key_spec.type, &secret);
 		if (err)
 			goto out_wipe_secret;
+		err = -EINVAL;
+		if (secret.size > FSCRYPT_MAX_STANDARD_KEY_SIZE &&
+		    !secret.is_hw_wrapped)
+			goto out_wipe_secret;
 	} else {
 		if (arg.raw_size < FSCRYPT_MIN_KEY_SIZE ||
-		    arg.raw_size > FSCRYPT_MAX_KEY_SIZE)
+		    arg.raw_size > (secret.is_hw_wrapped ?
+				    FSCRYPT_MAX_HW_WRAPPED_KEY_SIZE :
+				    FSCRYPT_MAX_STANDARD_KEY_SIZE))
 			return -EINVAL;
 		secret.size = arg.raw_size;
 		err = -EFAULT;
@@ -743,28 +775,68 @@ out_wipe_secret:
 }
 EXPORT_SYMBOL_GPL(fscrypt_ioctl_add_key);
 
-/*
- * Add the key for '-o test_dummy_encryption' to the filesystem keyring.
- *
- * Use a per-boot random key to prevent people from misusing this option.
- */
-int fscrypt_add_test_dummy_key(struct super_block *sb,
-			       struct fscrypt_key_specifier *key_spec)
+static void
+fscrypt_get_test_dummy_secret(struct fscrypt_master_key_secret *secret)
 {
-	static u8 test_key[FSCRYPT_MAX_KEY_SIZE];
+	static u8 test_key[FSCRYPT_MAX_STANDARD_KEY_SIZE];
+
+	get_random_once(test_key, sizeof(test_key));
+
+	memset(secret, 0, sizeof(*secret));
+	secret->size = sizeof(test_key);
+	memcpy(secret->raw, test_key, sizeof(test_key));
+}
+
+int fscrypt_get_test_dummy_key_identifier(
+				u8 key_identifier[FSCRYPT_KEY_IDENTIFIER_SIZE])
+{
 	struct fscrypt_master_key_secret secret;
 	int err;
 
-	get_random_once(test_key, FSCRYPT_MAX_KEY_SIZE);
+	fscrypt_get_test_dummy_secret(&secret);
 
-	memset(&secret, 0, sizeof(secret));
-	secret.size = FSCRYPT_MAX_KEY_SIZE;
-	memcpy(secret.raw, test_key, FSCRYPT_MAX_KEY_SIZE);
-
-	err = add_master_key(sb, &secret, key_spec);
+	err = fscrypt_init_hkdf(&secret.hkdf, secret.raw, secret.size);
+	if (err)
+		goto out;
+	err = fscrypt_hkdf_expand(&secret.hkdf, HKDF_CONTEXT_KEY_IDENTIFIER,
+				  NULL, 0, key_identifier,
+				  FSCRYPT_KEY_IDENTIFIER_SIZE);
+out:
 	wipe_master_key_secret(&secret);
 	return err;
 }
+
+/**
+ * fscrypt_add_test_dummy_key() - add the test dummy encryption key
+ * @sb: the filesystem instance to add the key to
+ * @dummy_policy: the encryption policy for test_dummy_encryption
+ *
+ * If needed, add the key for the test_dummy_encryption mount option to the
+ * filesystem.  To prevent misuse of this mount option, a per-boot random key is
+ * used instead of a hardcoded one.  This makes it so that any encrypted files
+ * created using this option won't be accessible after a reboot.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int fscrypt_add_test_dummy_key(struct super_block *sb,
+			       const struct fscrypt_dummy_policy *dummy_policy)
+{
+	const union fscrypt_policy *policy = dummy_policy->policy;
+	struct fscrypt_key_specifier key_spec;
+	struct fscrypt_master_key_secret secret;
+	int err;
+
+	if (!policy)
+		return 0;
+	err = fscrypt_policy_to_key_spec(policy, &key_spec);
+	if (err)
+		return err;
+	fscrypt_get_test_dummy_secret(&secret);
+	err = add_master_key(sb, &secret, &key_spec);
+	wipe_master_key_secret(&secret);
+	return err;
+}
+EXPORT_SYMBOL_GPL(fscrypt_add_test_dummy_key);
 
 /*
  * Verify that the current user has added a master key with the given identifier
@@ -1025,7 +1097,7 @@ static int do_remove_key(struct file *filp, void __user *_uarg, bool all_users)
 	err = -ENOKEY;
 	if (is_master_key_secret_present(&mk->mk_secret)) {
 		wipe_master_key_secret(&mk->mk_secret);
-		fscrypt_put_master_key_activeref(mk);
+		fscrypt_put_master_key_activeref(sb, mk);
 		err = 0;
 	}
 	inodes_remain = refcount_read(&mk->mk_active_refs) > 0;
