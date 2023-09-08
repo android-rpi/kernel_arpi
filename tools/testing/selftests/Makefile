@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
+TARGETS += android
 TARGETS += alsa
 TARGETS += amd-pstate
 TARGETS += arm64
