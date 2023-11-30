@@ -542,6 +542,13 @@ config MEMORY_BALLOON
 	bool
 
 #
+# support for memory relinquish
+config MEMORY_RELINQUISH
+	def_bool y
+	depends on ARCH_HAS_MEM_RELINQUISH
+	depends on MEMORY_BALLOON || PAGE_REPORTING
+
+#
 # support for memory balloon compaction
 config BALLOON_COMPACTION
 	bool "Allow for balloon memory compaction/migration"
@@ -816,6 +823,28 @@ config USE_PERCPU_NUMA_NODE_ID
 config HAVE_SETUP_PER_CPU_AREA
 	bool
 
+config CLEANCACHE
+	bool "Enable cleancache driver to cache clean pages if tmem is present"
+	help
+	  Cleancache can be thought of as a page-granularity victim cache
+	  for clean pages that the kernel's pageframe replacement algorithm
+	  (PFRA) would like to keep around, but can't since there isn't enough
+	  memory.  So when the PFRA "evicts" a page, it first attempts to use
+	  cleancache code to put the data contained in that page into
+	  "transcendent memory", memory that is not directly accessible or
+	  addressable by the kernel and is of unknown and possibly
+	  time-varying size.  And when a cleancache-enabled
+	  filesystem wishes to access a page in a file on disk, it first
+	  checks cleancache to see if it already contains it; if it does,
+	  the page is copied into the kernel and a disk access is avoided.
+	  When a transcendent memory driver is available (such as zcache or
+	  Xen transcendent memory), a significant I/O reduction
+	  may be achieved.  When none is available, all cleancache calls
+	  are reduced to a single pointer-compare-against-NULL resulting
+	  in a negligible performance hit.
+
+	  If unsure, say Y to enable cleancache
+
 config FRONTSWAP
 	bool
 
@@ -1073,6 +1102,11 @@ config KMAP_LOCAL_NON_LINEAR_PTE_ARRAY
 config IO_MAPPING
 	bool
 
+# Some architectures want callbacks for all IO mappings in order to
+# track the physical addresses that get used as devices.
+config ARCH_HAS_IOREMAP_PHYS_HOOKS
+	bool
+
 config SECRETMEM
 	def_bool ARCH_HAS_SET_DIRECT_MAP && !EMBEDDED
 
@@ -1149,6 +1183,18 @@ config LRU_GEN_STATS
 
 	  This option has a per-memcg and per-node memory overhead.
 # }
+
+config ARCH_SUPPORTS_PER_VMA_LOCK
+       def_bool n
+
+config PER_VMA_LOCK
+	def_bool y
+	depends on ARCH_SUPPORTS_PER_VMA_LOCK && MMU && SMP
+	help
+	  Allow per-vma locking during page fault handling.
+
+	  This feature allows locking each virtual memory area separately when
+	  handling page faults instead of taking mmap_lock.
 
 config LOCK_MM_AND_FIND_VMA
 	bool

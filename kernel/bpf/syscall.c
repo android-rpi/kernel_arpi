@@ -36,6 +36,8 @@
 #include <linux/memcontrol.h>
 #include <linux/trace_events.h>
 
+#include <trace/hooks/syscall_check.h>
+
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_CGROUP_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
@@ -806,10 +808,10 @@ static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
 	/* set default open/close callbacks */
 	vma->vm_ops = &bpf_map_default_vmops;
 	vma->vm_private_data = map;
-	vma->vm_flags &= ~VM_MAYEXEC;
+	vm_flags_clear(vma, VM_MAYEXEC);
 	if (!(vma->vm_flags & VM_WRITE))
 		/* disallow re-mapping with PROT_WRITE */
-		vma->vm_flags &= ~VM_MAYWRITE;
+		vm_flags_clear(vma, VM_MAYWRITE);
 
 	err = map->ops->map_mmap(map, vma);
 	if (err)
@@ -4940,6 +4942,8 @@ static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
 	memset(&attr, 0, sizeof(attr));
 	if (copy_from_bpfptr(&attr, uattr, size) != 0)
 		return -EFAULT;
+
+	trace_android_vh_check_bpf_syscall(cmd, &attr, size);
 
 	err = security_bpf(cmd, &attr, size);
 	if (err < 0)

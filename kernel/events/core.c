@@ -1962,7 +1962,6 @@ static void perf_group_attach(struct perf_event *event)
 
 	list_add_tail(&event->sibling_list, &group_leader->sibling_list);
 	group_leader->nr_siblings++;
-	group_leader->group_generation++;
 
 	perf_event__header_size(group_leader);
 
@@ -2157,7 +2156,6 @@ static void perf_group_detach(struct perf_event *event)
 	if (leader != event) {
 		list_del_init(&event->sibling_list);
 		event->group_leader->nr_siblings--;
-		event->group_leader->group_generation++;
 		goto out;
 	}
 
@@ -4523,6 +4521,7 @@ out:
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(perf_event_read_local);
 
 static int perf_event_read(struct perf_event *event, bool group)
 {
@@ -5281,7 +5280,7 @@ static int __perf_read_group_add(struct perf_event *leader,
 					u64 read_format, u64 *values)
 {
 	struct perf_event_context *ctx = leader->ctx;
-	struct perf_event *sub, *parent;
+	struct perf_event *sub;
 	unsigned long flags;
 	int n = 1; /* skip @nr */
 	int ret;
@@ -5291,33 +5290,6 @@ static int __perf_read_group_add(struct perf_event *leader,
 		return ret;
 
 	raw_spin_lock_irqsave(&ctx->lock, flags);
-	/*
-	 * Verify the grouping between the parent and child (inherited)
-	 * events is still in tact.
-	 *
-	 * Specifically:
-	 *  - leader->ctx->lock pins leader->sibling_list
-	 *  - parent->child_mutex pins parent->child_list
-	 *  - parent->ctx->mutex pins parent->sibling_list
-	 *
-	 * Because parent->ctx != leader->ctx (and child_list nests inside
-	 * ctx->mutex), group destruction is not atomic between children, also
-	 * see perf_event_release_kernel(). Additionally, parent can grow the
-	 * group.
-	 *
-	 * Therefore it is possible to have parent and child groups in a
-	 * different configuration and summing over such a beast makes no sense
-	 * what so ever.
-	 *
-	 * Reject this.
-	 */
-	parent = leader->parent;
-	if (parent &&
-	    (parent->group_generation != leader->group_generation ||
-	     parent->nr_siblings != leader->nr_siblings)) {
-		ret = -ECHILD;
-		goto unlock;
-	}
 
 	/*
 	 * Since we co-schedule groups, {enabled,running} times of siblings
@@ -5351,9 +5323,8 @@ static int __perf_read_group_add(struct perf_event *leader,
 			values[n++] = atomic64_read(&sub->lost_samples);
 	}
 
-unlock:
 	raw_spin_unlock_irqrestore(&ctx->lock, flags);
-	return ret;
+	return 0;
 }
 
 static int perf_read_group(struct perf_event *event,
@@ -5372,6 +5343,10 @@ static int perf_read_group(struct perf_event *event,
 
 	values[0] = 1 + leader->nr_siblings;
 
+	/*
+	 * By locking the child_mutex of the leader we effectively
+	 * lock the child list of all siblings.. XXX explain how.
+	 */
 	mutex_lock(&leader->child_mutex);
 
 	ret = __perf_read_group_add(leader, read_format, values);
@@ -6433,7 +6408,7 @@ aux_unlock:
 	 * Since pinned accounting is per vm we cannot allow fork() to copy our
 	 * vma.
 	 */
-	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_ops = &perf_mmap_vmops;
 
 	if (event->pmu->event_mapped)
@@ -6622,23 +6597,12 @@ static void perf_pending_task(struct callback_head *head)
 #ifdef CONFIG_GUEST_PERF_EVENTS
 struct perf_guest_info_callbacks __rcu *perf_guest_cbs;
 
-DEFINE_STATIC_CALL_RET0(__perf_guest_state, *perf_guest_cbs->state);
-DEFINE_STATIC_CALL_RET0(__perf_guest_get_ip, *perf_guest_cbs->get_ip);
-DEFINE_STATIC_CALL_RET0(__perf_guest_handle_intel_pt_intr, *perf_guest_cbs->handle_intel_pt_intr);
-
 void perf_register_guest_info_callbacks(struct perf_guest_info_callbacks *cbs)
 {
 	if (WARN_ON_ONCE(rcu_access_pointer(perf_guest_cbs)))
 		return;
 
 	rcu_assign_pointer(perf_guest_cbs, cbs);
-	static_call_update(__perf_guest_state, cbs->state);
-	static_call_update(__perf_guest_get_ip, cbs->get_ip);
-
-	/* Implementing ->handle_intel_pt_intr is optional. */
-	if (cbs->handle_intel_pt_intr)
-		static_call_update(__perf_guest_handle_intel_pt_intr,
-				   cbs->handle_intel_pt_intr);
 }
 EXPORT_SYMBOL_GPL(perf_register_guest_info_callbacks);
 
@@ -6648,10 +6612,6 @@ void perf_unregister_guest_info_callbacks(struct perf_guest_info_callbacks *cbs)
 		return;
 
 	rcu_assign_pointer(perf_guest_cbs, NULL);
-	static_call_update(__perf_guest_state, (void *)&__static_call_return0);
-	static_call_update(__perf_guest_get_ip, (void *)&__static_call_return0);
-	static_call_update(__perf_guest_handle_intel_pt_intr,
-			   (void *)&__static_call_return0);
 	synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(perf_unregister_guest_info_callbacks);
@@ -13293,8 +13253,6 @@ static int inherit_group(struct perf_event *parent_event,
 		    !perf_get_aux_event(child_ctr, leader))
 			return -EINVAL;
 	}
-	if (leader)
-		leader->group_generation = parent_event->group_generation;
 	return 0;
 }
 

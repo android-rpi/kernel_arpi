@@ -11,6 +11,7 @@
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/property.h>
 #include <linux/types.h>
+#include <linux/android_kabi.h>
 
 #include <asm/msi.h>
 
@@ -245,14 +246,6 @@ struct gpio_irq_chip {
 	bool initialized;
 
 	/**
-	 * @domain_is_allocated_externally:
-	 *
-	 * True it the irq_domain was allocated outside of gpiolib, in which
-	 * case gpiolib won't free the irq_domain itself.
-	 */
-	bool domain_is_allocated_externally;
-
-	/**
 	 * @init_hw: optional routine to initialize hardware before
 	 * an IRQ chip will be added. This is quite useful when
 	 * a particular driver wants to clear IRQ related registers
@@ -315,6 +308,9 @@ struct gpio_irq_chip {
 	 * Store old irq_chip irq_mask callback
 	 */
 	void		(*irq_mask)(struct irq_data *data);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /**
@@ -546,6 +542,9 @@ struct gpio_chip {
 				       struct device_node *np);
 
 #endif /* CONFIG_OF_GPIO */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 extern const char *gpiochip_is_requested(struct gpio_chip *gc,

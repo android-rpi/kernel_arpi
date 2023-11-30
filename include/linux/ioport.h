@@ -14,6 +14,7 @@
 #include <linux/compiler.h>
 #include <linux/minmax.h>
 #include <linux/types.h>
+#include <linux/android_kabi.h>
 /*
  * Resources are tree-like, allowing
  * nesting etc..
@@ -25,6 +26,11 @@ struct resource {
 	unsigned long flags;
 	unsigned long desc;
 	struct resource *parent, *sibling, *child;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 /*
@@ -318,8 +324,6 @@ extern void __devm_release_region(struct device *dev, struct resource *parent,
 				  resource_size_t start, resource_size_t n);
 extern int iomem_map_sanity_check(resource_size_t addr, unsigned long size);
 extern bool iomem_is_exclusive(u64 addr);
-extern bool resource_is_exclusive(struct resource *resource, u64 addr,
-				  resource_size_t size);
 
 extern int
 walk_system_ram_range(unsigned long start_pfn, unsigned long nr_pages,

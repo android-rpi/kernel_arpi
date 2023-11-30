@@ -44,6 +44,8 @@
 #endif
 #include <net/net_debug.h>
 #include <net/dropreason.h>
+#include <linux/android_kabi.h>
+#include <linux/android_vendor.h>
 
 /**
  * DOC: skb checksums
@@ -601,6 +603,8 @@ struct skb_shared_info {
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
 
+	ANDROID_OEM_DATA_ARRAY(1, 3);
+
 	/* must be last field, see pskb_expand_head() */
 	skb_frag_t	frags[MAX_SKB_FRAGS];
 };
@@ -1043,6 +1047,9 @@ struct sk_buff {
 #ifdef CONFIG_KCOV
 	u64			kcov_handle;
 #endif
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 
 	); /* end headers group */
 

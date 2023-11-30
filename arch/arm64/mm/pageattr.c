@@ -11,6 +11,7 @@
 #include <asm/cacheflush.h>
 #include <asm/set_memory.h>
 #include <asm/tlbflush.h>
+#include <asm/kfence.h>
 
 struct page_change_data {
 	pgprot_t set_mask;
@@ -22,12 +23,14 @@ bool rodata_full __ro_after_init = IS_ENABLED(CONFIG_RODATA_FULL_DEFAULT_ENABLED
 bool can_set_direct_map(void)
 {
 	/*
-	 * rodata_full, DEBUG_PAGEALLOC and KFENCE require linear map to be
+	 * rodata_full and DEBUG_PAGEALLOC require linear map to be
 	 * mapped at page granularity, so that it is possible to
 	 * protect/unprotect single pages.
+	 *
+	 * KFENCE pool requires page-granular mapping if initialized late.
 	 */
 	return (rodata_enabled && rodata_full) || debug_pagealloc_enabled() ||
-		IS_ENABLED(CONFIG_KFENCE);
+		arm64_kfence_can_set_direct_map();
 }
 
 static int change_page_range(pte_t *ptep, unsigned long addr, void *data)
@@ -158,6 +161,23 @@ int set_memory_valid(unsigned long addr, int numpages, int enable)
 		return __change_memory_common(addr, PAGE_SIZE * numpages,
 					__pgprot(0),
 					__pgprot(PTE_VALID));
+}
+
+/*
+ * Only to be used with memory in the logical map (e.g. vmapped memory will
+ * face coherency issues as we don't call vm_unmap_aliases()). Only to be used
+ * whilst accesses are not ongoing to the region, as we do not follow the
+ * make-before-break sequence in order to cut down the run time of this
+ * function.
+ */
+int arch_set_direct_map_range_uncached(unsigned long addr, unsigned long numpages)
+{
+	if (!can_set_direct_map())
+		return 0;
+
+	return __change_memory_common(addr, PAGE_SIZE * numpages,
+				      __pgprot(PTE_ATTRINDX(MT_NORMAL_NC)),
+				      __pgprot(PTE_ATTRINDX_MASK));
 }
 
 int set_direct_map_invalid_noflush(struct page *page)

@@ -30,6 +30,7 @@
 #include <linux/efi.h>
 #include <linux/psci.h>
 #include <linux/sched/task.h>
+#include <linux/scs.h>
 #include <linux/mm.h>
 
 #include <asm/acpi.h>
@@ -40,8 +41,10 @@
 #include <asm/elf.h>
 #include <asm/cpufeature.h>
 #include <asm/cpu_ops.h>
+#include <asm/hypervisor.h>
 #include <asm/kasan.h>
 #include <asm/numa.h>
+#include <asm/scs.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/smp_plat.h>
@@ -49,6 +52,7 @@
 #include <asm/tlbflush.h>
 #include <asm/traps.h>
 #include <asm/efi.h>
+#include <asm/hypervisor.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/mmu_context.h>
 
@@ -312,6 +316,8 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	jump_label_init();
 	parse_early_param();
 
+	dynamic_scs_init();
+
 	/*
 	 * Unmask asynchronous aborts and fiq after bringing up possible
 	 * earlycon. (Report possible System Errors once we can report this
@@ -438,3 +444,10 @@ static int __init register_arm64_panic_block(void)
 	return 0;
 }
 device_initcall(register_arm64_panic_block);
+
+void kvm_arm_init_hyp_services(void)
+{
+	kvm_init_ioremap_services();
+	kvm_init_memshare_services();
+	kvm_init_memrelinquish_services();
+}

@@ -4,7 +4,9 @@
  * Function"), aka RFC 5869.  See also the original paper (Krawczyk 2010):
  * "Cryptographic Extraction and Key Derivation: The HKDF Scheme".
  *
- * This is used to derive keys from the fscrypt master keys.
+ * This is used to derive keys from the fscrypt master keys (or from the
+ * "software secrets" which hardware derives from the fscrypt master keys, in
+ * the case that the fscrypt master keys are hardware-wrapped keys).
  *
  * Copyright 2019 Google LLC
  */
@@ -79,7 +81,7 @@ int fscrypt_init_hkdf(struct fscrypt_hkdf *hkdf, const u8 *master_key,
 		return PTR_ERR(hmac_tfm);
 	}
 
-	if (WARN_ON(crypto_shash_digestsize(hmac_tfm) != sizeof(prk))) {
+	if (WARN_ON_ONCE(crypto_shash_digestsize(hmac_tfm) != sizeof(prk))) {
 		err = -EINVAL;
 		goto err_free_tfm;
 	}
@@ -125,7 +127,7 @@ int fscrypt_hkdf_expand(const struct fscrypt_hkdf *hkdf, u8 context,
 	u8 counter = 1;
 	u8 tmp[HKDF_HASHLEN];
 
-	if (WARN_ON(okmlen > 255 * HKDF_HASHLEN))
+	if (WARN_ON_ONCE(okmlen > 255 * HKDF_HASHLEN))
 		return -EINVAL;
 
 	desc->tfm = hkdf->hmac_tfm;

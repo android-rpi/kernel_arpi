@@ -135,7 +135,7 @@ config RDA_TIMER
 	  Enables the support for the RDA Micro timer driver.
 
 config SUN4I_TIMER
-	bool "Sun4i timer driver" if COMPILE_TEST
+	bool "Sun4i timer driver"
 	depends on HAS_IOMEM
 	select CLKSRC_MMIO
 	select TIMER_OF
@@ -472,12 +472,21 @@ config SYS_SUPPORTS_SH_CMT
 	bool
 
 config MTK_TIMER
-	bool "Mediatek timer driver" if COMPILE_TEST
+	tristate "MediaTek timer driver"
 	depends on HAS_IOMEM
 	select TIMER_OF
 	select CLKSRC_MMIO
 	help
 	  Support for Mediatek timer driver.
+
+config MTK_CPUX_TIMER
+	bool "MediaTek CPUX timer driver" if COMPILE_TEST
+	depends on HAS_IOMEM
+	default ARCH_MEDIATEK
+	select TIMER_OF
+	select CLKSRC_MMIO
+	help
+	  Support for MediaTek CPUXGPT timer driver.
 
 config SPRD_TIMER
 	bool "Spreadtrum timer driver" if EXPERT
