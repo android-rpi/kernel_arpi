@@ -36,6 +36,8 @@
 #include <linux/memcontrol.h>
 #include <linux/trace_events.h>
 
+#include <trace/hooks/syscall_check.h>
+
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_CGROUP_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
@@ -628,28 +630,6 @@ static void bpf_map_put_uref(struct bpf_map *map)
 	}
 }
 
-static void bpf_map_free_in_work(struct bpf_map *map)
-{
-	INIT_WORK(&map->work, bpf_map_free_deferred);
-	/* Avoid spawning kworkers, since they all might contend
-	 * for the same mutex like slab_mutex.
-	 */
-	queue_work(system_unbound_wq, &map->work);
-}
-
-static void bpf_map_free_rcu_gp(struct rcu_head *rcu)
-{
-	bpf_map_free_in_work(container_of(rcu, struct bpf_map, rcu));
-}
-
-static void bpf_map_free_mult_rcu_gp(struct rcu_head *rcu)
-{
-	if (rcu_trace_implies_rcu_gp())
-		bpf_map_free_rcu_gp(rcu);
-	else
-		call_rcu(rcu, bpf_map_free_rcu_gp);
-}
-
 /* decrement map refcnt and schedule it for freeing via workqueue
  * (unrelying map implementation ops->map_free() might sleep)
  */
@@ -659,11 +639,11 @@ static void __bpf_map_put(struct bpf_map *map, bool do_idr_lock)
 		/* bpf_map_free_id() must be called first */
 		bpf_map_free_id(map, do_idr_lock);
 		btf_put(map->btf);
-
-		if (READ_ONCE(map->free_after_mult_rcu_gp))
-			call_rcu_tasks_trace(&map->rcu, bpf_map_free_mult_rcu_gp);
-		else
-			bpf_map_free_in_work(map);
+		INIT_WORK(&map->work, bpf_map_free_deferred);
+		/* Avoid spawning kworkers, since they all might contend
+		 * for the same mutex like slab_mutex.
+		 */
+		queue_work(system_unbound_wq, &map->work);
 	}
 }
 
@@ -828,10 +808,10 @@ static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
 	/* set default open/close callbacks */
 	vma->vm_ops = &bpf_map_default_vmops;
 	vma->vm_private_data = map;
-	vma->vm_flags &= ~VM_MAYEXEC;
+	vm_flags_clear(vma, VM_MAYEXEC);
 	if (!(vma->vm_flags & VM_WRITE))
 		/* disallow re-mapping with PROT_WRITE */
-		vma->vm_flags &= ~VM_MAYWRITE;
+		vm_flags_clear(vma, VM_MAYWRITE);
 
 	err = map->ops->map_mmap(map, vma);
 	if (err)
@@ -4977,6 +4957,8 @@ static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
 	memset(&attr, 0, sizeof(attr));
 	if (copy_from_bpfptr(&attr, uattr, size) != 0)
 		return -EFAULT;
+
+	trace_android_vh_check_bpf_syscall(cmd, &attr, size);
 
 	err = security_bpf(cmd, &attr, size);
 	if (err < 0)

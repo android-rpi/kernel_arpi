@@ -1176,9 +1176,7 @@ const char * const vmstat_text[] = {
 	"nr_zone_write_pending",
 	"nr_mlock",
 	"nr_bounce",
-#if IS_ENABLED(CONFIG_ZSMALLOC)
 	"nr_zspages",
-#endif
 	"nr_free_cma",
 
 	/* enum numa_stat_item counters */
@@ -1395,6 +1393,12 @@ const char * const vmstat_text[] = {
 #ifdef CONFIG_X86
 	"direct_map_level2_splits",
 	"direct_map_level3_splits",
+#endif
+#ifdef CONFIG_PER_VMA_LOCK_STATS
+	"vma_lock_success",
+	"vma_lock_abort",
+	"vma_lock_retry",
+	"vma_lock_miss",
 #endif
 #endif /* CONFIG_VM_EVENT_COUNTERS || CONFIG_MEMCG */
 };

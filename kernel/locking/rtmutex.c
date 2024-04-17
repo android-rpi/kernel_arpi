@@ -25,6 +25,7 @@
 #include <linux/ww_mutex.h>
 
 #include <trace/events/lock.h>
+#include <trace/hooks/dtask.h>
 
 #include "rtmutex_common.h"
 
@@ -326,6 +327,11 @@ static __always_inline bool unlock_rt_mutex_safe(struct rt_mutex_base *lock,
 static __always_inline int __waiter_prio(struct task_struct *task)
 {
 	int prio = task->prio;
+	int waiter_prio = 0;
+
+	trace_android_vh_rtmutex_waiter_prio(task, &waiter_prio);
+	if (waiter_prio > 0)
+		return waiter_prio;
 
 	if (!rt_prio(prio))
 		return DEFAULT_PRIO;
@@ -333,43 +339,21 @@ static __always_inline int __waiter_prio(struct task_struct *task)
 	return prio;
 }
 
-/*
- * Update the waiter->tree copy of the sort keys.
- */
 static __always_inline void
 waiter_update_prio(struct rt_mutex_waiter *waiter, struct task_struct *task)
 {
-	lockdep_assert_held(&waiter->lock->wait_lock);
-	lockdep_assert(RB_EMPTY_NODE(&waiter->tree.entry));
-
-	waiter->tree.prio = __waiter_prio(task);
-	waiter->tree.deadline = task->dl.deadline;
+	waiter->prio = __waiter_prio(task);
+	waiter->deadline = task->dl.deadline;
 }
 
 /*
- * Update the waiter->pi_tree copy of the sort keys (from the tree copy).
+ * Only use with rt_mutex_waiter_{less,equal}()
  */
-static __always_inline void
-waiter_clone_prio(struct rt_mutex_waiter *waiter, struct task_struct *task)
-{
-	lockdep_assert_held(&waiter->lock->wait_lock);
-	lockdep_assert_held(&task->pi_lock);
-	lockdep_assert(RB_EMPTY_NODE(&waiter->pi_tree.entry));
-
-	waiter->pi_tree.prio = waiter->tree.prio;
-	waiter->pi_tree.deadline = waiter->tree.deadline;
-}
-
-/*
- * Only use with rt_waiter_node_{less,equal}()
- */
-#define task_to_waiter_node(p)	\
-	&(struct rt_waiter_node){ .prio = __waiter_prio(p), .deadline = (p)->dl.deadline }
 #define task_to_waiter(p)	\
-	&(struct rt_mutex_waiter){ .tree = *task_to_waiter_node(p) }
+	&(struct rt_mutex_waiter){ .prio = __waiter_prio(p), .deadline = (p)->dl.deadline }
 
-static __always_inline int rt_waiter_node_less(struct rt_waiter_node *left,
-					       struct rt_waiter_node *right)
+static __always_inline int rt_mutex_waiter_less(struct rt_mutex_waiter *left,
+						struct rt_mutex_waiter *right)
 {
 	if (left->prio < right->prio)
 		return 1;
@@ -386,8 +370,8 @@ static __always_inline int rt_waiter_node_less(struct rt_waiter_node *left,
 	return 0;
 }
 
-static __always_inline int rt_waiter_node_equal(struct rt_waiter_node *left,
-						 struct rt_waiter_node *right)
+static __always_inline int rt_mutex_waiter_equal(struct rt_mutex_waiter *left,
+						 struct rt_mutex_waiter *right)
 {
 	if (left->prio != right->prio)
 		return 0;
@@ -407,7 +391,13 @@ static __always_inline int rt_waiter_node_equal(struct rt_waiter_node *left,
 static inline bool rt_mutex_steal(struct rt_mutex_waiter *waiter,
 				  struct rt_mutex_waiter *top_waiter)
 {
-	if (rt_waiter_node_less(&waiter->tree, &top_waiter->tree))
+	bool ret = false;
+
+	if (rt_mutex_waiter_less(waiter, top_waiter))
+		return true;
+
+	trace_android_vh_rt_mutex_steal(waiter->prio, top_waiter->prio, &ret);
+	if (ret)
 		return true;
 
 #ifdef RT_MUTEX_BUILD_SPINLOCKS
@@ -415,30 +405,30 @@ static inline bool rt_mutex_steal(struct rt_mutex_waiter *waiter,
 	 * Note that RT tasks are excluded from same priority (lateral)
 	 * steals to prevent the introduction of an unbounded latency.
 	 */
-	if (rt_prio(waiter->tree.prio) || dl_prio(waiter->tree.prio))
+	if (rt_prio(waiter->prio) || dl_prio(waiter->prio))
 		return false;
 
-	return rt_waiter_node_equal(&waiter->tree, &top_waiter->tree);
+	return rt_mutex_waiter_equal(waiter, top_waiter);
 #else
 	return false;
 #endif
 }
 
 #define __node_2_waiter(node) \
-	rb_entry((node), struct rt_mutex_waiter, tree.entry)
+	rb_entry((node), struct rt_mutex_waiter, tree_entry)
 
 static __always_inline bool __waiter_less(struct rb_node *a, const struct rb_node *b)
 {
 	struct rt_mutex_waiter *aw = __node_2_waiter(a);
 	struct rt_mutex_waiter *bw = __node_2_waiter(b);
 
-	if (rt_waiter_node_less(&aw->tree, &bw->tree))
+	if (rt_mutex_waiter_less(aw, bw))
 		return 1;
 
 	if (!build_ww_mutex())
 		return 0;
 
-	if (rt_waiter_node_less(&bw->tree, &aw->tree))
+	if (rt_mutex_waiter_less(bw, aw))
 		return 0;
 
 	/* NOTE: relies on waiter->ww_ctx being set before insertion */
@@ -456,58 +446,48 @@ static __always_inline bool __waiter_less(struct rb_node *a, const struct rb_nod
 static __always_inline void
 rt_mutex_enqueue(struct rt_mutex_base *lock, struct rt_mutex_waiter *waiter)
 {
-	lockdep_assert_held(&lock->wait_lock);
-
-	rb_add_cached(&waiter->tree.entry, &lock->waiters, __waiter_less);
+	rb_add_cached(&waiter->tree_entry, &lock->waiters, __waiter_less);
 }
 
 static __always_inline void
 rt_mutex_dequeue(struct rt_mutex_base *lock, struct rt_mutex_waiter *waiter)
 {
-	lockdep_assert_held(&lock->wait_lock);
-
-	if (RB_EMPTY_NODE(&waiter->tree.entry))
+	if (RB_EMPTY_NODE(&waiter->tree_entry))
 		return;
 
-	rb_erase_cached(&waiter->tree.entry, &lock->waiters);
-	RB_CLEAR_NODE(&waiter->tree.entry);
+	rb_erase_cached(&waiter->tree_entry, &lock->waiters);
+	RB_CLEAR_NODE(&waiter->tree_entry);
 }
 
-#define __node_2_rt_node(node) \
-	rb_entry((node), struct rt_waiter_node, entry)
+#define __node_2_pi_waiter(node) \
+	rb_entry((node), struct rt_mutex_waiter, pi_tree_entry)
 
-static __always_inline bool __pi_waiter_less(struct rb_node *a, const struct rb_node *b)
+static __always_inline bool
+__pi_waiter_less(struct rb_node *a, const struct rb_node *b)
 {
-	return rt_waiter_node_less(__node_2_rt_node(a), __node_2_rt_node(b));
+	return rt_mutex_waiter_less(__node_2_pi_waiter(a), __node_2_pi_waiter(b));
 }
 
 static __always_inline void
 rt_mutex_enqueue_pi(struct task_struct *task, struct rt_mutex_waiter *waiter)
 {
-	lockdep_assert_held(&task->pi_lock);
-
-	rb_add_cached(&waiter->pi_tree.entry, &task->pi_waiters, __pi_waiter_less);
+	rb_add_cached(&waiter->pi_tree_entry, &task->pi_waiters, __pi_waiter_less);
 }
 
 static __always_inline void
 rt_mutex_dequeue_pi(struct task_struct *task, struct rt_mutex_waiter *waiter)
 {
-	lockdep_assert_held(&task->pi_lock);
-
-	if (RB_EMPTY_NODE(&waiter->pi_tree.entry))
+	if (RB_EMPTY_NODE(&waiter->pi_tree_entry))
 		return;
 
-	rb_erase_cached(&waiter->pi_tree.entry, &task->pi_waiters);
-	RB_CLEAR_NODE(&waiter->pi_tree.entry);
+	rb_erase_cached(&waiter->pi_tree_entry, &task->pi_waiters);
+	RB_CLEAR_NODE(&waiter->pi_tree_entry);
 }
 
-static __always_inline void rt_mutex_adjust_prio(struct rt_mutex_base *lock,
-						 struct task_struct *p)
+static __always_inline void rt_mutex_adjust_prio(struct task_struct *p)
 {
 	struct task_struct *pi_task = NULL;
 
-	lockdep_assert_held(&lock->wait_lock);
-	lockdep_assert(rt_mutex_owner(lock) == p);
 	lockdep_assert_held(&p->pi_lock);
 
 	if (task_has_pi_waiters(p))
@@ -603,13 +583,8 @@ static __always_inline struct rt_mutex_base *task_blocked_on_lock(struct task_st
  * Chain walk basics and protection scope
  *
  * [R] refcount on task
- * [Pn] task->pi_lock held
+ * [P] task->pi_lock held
  * [L] rtmutex->wait_lock held
- *
- * Normal locking order:
- *
- *   rtmutex->wait_lock
- *     task->pi_lock
  *
  * Step	Description				Protected by
  *	function arguments:
@@ -625,32 +600,27 @@ static __always_inline struct rt_mutex_base *task_blocked_on_lock(struct task_st
  *	again:
  *	  loop_sanity_check();
  *	retry:
- * [1]	  lock(task->pi_lock);			[R] acquire [P1]
- * [2]	  waiter = task->pi_blocked_on;		[P1]
- * [3]	  check_exit_conditions_1();		[P1]
- * [4]	  lock = waiter->lock;			[P1]
- * [5]	  if (!try_lock(lock->wait_lock)) {	[P1] try to acquire [L]
- *	    unlock(task->pi_lock);		release [P1]
+ * [1]	  lock(task->pi_lock);			[R] acquire [P]
+ * [2]	  waiter = task->pi_blocked_on;		[P]
+ * [3]	  check_exit_conditions_1();		[P]
+ * [4]	  lock = waiter->lock;			[P]
+ * [5]	  if (!try_lock(lock->wait_lock)) {	[P] try to acquire [L]
+ *	    unlock(task->pi_lock);		release [P]
  *	    goto retry;
  *	  }
- * [6]	  check_exit_conditions_2();		[P1] + [L]
- * [7]	  requeue_lock_waiter(lock, waiter);	[P1] + [L]
- * [8]	  unlock(task->pi_lock);		release [P1]
+ * [6]	  check_exit_conditions_2();		[P] + [L]
+ * [7]	  requeue_lock_waiter(lock, waiter);	[P] + [L]
+ * [8]	  unlock(task->pi_lock);		release [P]
  *	  put_task_struct(task);		release [R]
  * [9]	  check_exit_conditions_3();		[L]
  * [10]	  task = owner(lock);			[L]
  *	  get_task_struct(task);		[L] acquire [R]
- *	  lock(task->pi_lock);			[L] acquire [P2]
- * [11]	  requeue_pi_waiter(tsk, waiters(lock));[P2] + [L]
- * [12]	  check_exit_conditions_4();		[P2] + [L]
- * [13]	  unlock(task->pi_lock);		release [P2]
+ *	  lock(task->pi_lock);			[L] acquire [P]
+ * [11]	  requeue_pi_waiter(tsk, waiters(lock));[P] + [L]
+ * [12]	  check_exit_conditions_4();		[P] + [L]
+ * [13]	  unlock(task->pi_lock);		release [P]
  *	  unlock(lock->wait_lock);		release [L]
  *	  goto again;
- *
- * Where P1 is the blocking task and P2 is the lock owner; going up one step
- * the owner becomes the next blocked task etc..
- *
-*
  */
 static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 					      enum rtmutex_chainwalk chwalk,
@@ -798,7 +768,7 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 	 * enabled we continue, but stop the requeueing in the chain
 	 * walk.
 	 */
-	if (rt_waiter_node_equal(&waiter->tree, task_to_waiter_node(task))) {
+	if (rt_mutex_waiter_equal(waiter, task_to_waiter(task))) {
 		if (!detect_deadlock)
 			goto out_unlock_pi;
 		else
@@ -806,18 +776,13 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 	}
 
 	/*
-	 * [4] Get the next lock; per holding task->pi_lock we can't unblock
-	 * and guarantee @lock's existence.
+	 * [4] Get the next lock
 	 */
 	lock = waiter->lock;
 	/*
 	 * [5] We need to trylock here as we are holding task->pi_lock,
 	 * which is the reverse lock order versus the other rtmutex
 	 * operations.
-	 *
-	 * Per the above, holding task->pi_lock guarantees lock exists, so
-	 * inverting this lock order is infeasible from a life-time
-	 * perspective.
 	 */
 	if (!raw_spin_trylock(&lock->wait_lock)) {
 		raw_spin_unlock_irq(&task->pi_lock);
@@ -921,18 +886,17 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 	 * or
 	 *
 	 *   DL CBS enforcement advancing the effective deadline.
+	 *
+	 * Even though pi_waiters also uses these fields, and that tree is only
+	 * updated in [11], we can do this here, since we hold [L], which
+	 * serializes all pi_waiters access and rb_erase() does not care about
+	 * the values of the node being removed.
 	 */
 	waiter_update_prio(waiter, task);
 
 	rt_mutex_enqueue(lock, waiter);
 
-	/*
-	 * [8] Release the (blocking) task in preparation for
-	 * taking the owner task in [10].
-	 *
-	 * Since we hold lock->waiter_lock, task cannot unblock, even if we
-	 * release task->pi_lock.
-	 */
+	/* [8] Release the task */
 	raw_spin_unlock(&task->pi_lock);
 	put_task_struct(task);
 
@@ -956,12 +920,7 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 		return 0;
 	}
 
-	/*
-	 * [10] Grab the next task, i.e. the owner of @lock
-	 *
-	 * Per holding lock->wait_lock and checking for !owner above, there
-	 * must be an owner and it cannot go away.
-	 */
+	/* [10] Grab the next task, i.e. the owner of @lock */
 	task = get_task_struct(rt_mutex_owner(lock));
 	raw_spin_lock(&task->pi_lock);
 
@@ -974,9 +933,8 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 		 * and adjust the priority of the owner.
 		 */
 		rt_mutex_dequeue_pi(task, prerequeue_top_waiter);
-		waiter_clone_prio(waiter, task);
 		rt_mutex_enqueue_pi(task, waiter);
-		rt_mutex_adjust_prio(lock, task);
+		rt_mutex_adjust_prio(task);
 
 	} else if (prerequeue_top_waiter == waiter) {
 		/*
@@ -991,9 +949,8 @@ static int __sched rt_mutex_adjust_prio_chain(struct task_struct *task,
 		 */
 		rt_mutex_dequeue_pi(task, waiter);
 		waiter = rt_mutex_top_waiter(lock);
-		waiter_clone_prio(waiter, task);
 		rt_mutex_enqueue_pi(task, waiter);
-		rt_mutex_adjust_prio(lock, task);
+		rt_mutex_adjust_prio(task);
 	} else {
 		/*
 		 * Nothing changed. No need to do any priority
@@ -1205,11 +1162,11 @@ static int __sched task_blocks_on_rt_mutex(struct rt_mutex_base *lock,
 	if (owner == task && !(build_ww_mutex() && ww_ctx))
 		return -EDEADLK;
 
+	trace_android_vh_task_blocks_on_rtmutex(lock, waiter, task, ww_ctx, &chwalk);
 	raw_spin_lock(&task->pi_lock);
 	waiter->task = task;
 	waiter->lock = lock;
 	waiter_update_prio(waiter, task);
-	waiter_clone_prio(waiter, task);
 
 	/* Get the top priority waiter on the lock */
 	if (rt_mutex_has_waiters(lock))
@@ -1243,7 +1200,7 @@ static int __sched task_blocks_on_rt_mutex(struct rt_mutex_base *lock,
 		rt_mutex_dequeue_pi(owner, top_waiter);
 		rt_mutex_enqueue_pi(owner, waiter);
 
-		rt_mutex_adjust_prio(lock, owner);
+		rt_mutex_adjust_prio(owner);
 		if (owner->pi_blocked_on)
 			chain_walk = 1;
 	} else if (rt_mutex_cond_detect_deadlock(waiter, chwalk)) {
@@ -1290,8 +1247,6 @@ static void __sched mark_wakeup_next_waiter(struct rt_wake_q_head *wqh,
 {
 	struct rt_mutex_waiter *waiter;
 
-	lockdep_assert_held(&lock->wait_lock);
-
 	raw_spin_lock(&current->pi_lock);
 
 	waiter = rt_mutex_top_waiter(lock);
@@ -1304,7 +1259,7 @@ static void __sched mark_wakeup_next_waiter(struct rt_wake_q_head *wqh,
 	 * task unblocks.
 	 */
 	rt_mutex_dequeue_pi(current, waiter);
-	rt_mutex_adjust_prio(lock, current);
+	rt_mutex_adjust_prio(current);
 
 	/*
 	 * As we are waking up the top waiter, and the waiter stays
@@ -1540,7 +1495,7 @@ static void __sched remove_waiter(struct rt_mutex_base *lock,
 	if (rt_mutex_has_waiters(lock))
 		rt_mutex_enqueue_pi(owner, rt_mutex_top_waiter(lock));
 
-	rt_mutex_adjust_prio(lock, owner);
+	rt_mutex_adjust_prio(owner);
 
 	/* Store the lock on which owner is blocked or NULL */
 	next_lock = task_blocked_on_lock(owner);
@@ -1586,6 +1541,7 @@ static int __sched rt_mutex_slowlock_block(struct rt_mutex_base *lock,
 	struct task_struct *owner;
 	int ret = 0;
 
+	trace_android_vh_rtmutex_wait_start(lock);
 	for (;;) {
 		/* Try to acquire the lock: */
 		if (try_to_take_rt_mutex(lock, current, waiter))
@@ -1619,6 +1575,7 @@ static int __sched rt_mutex_slowlock_block(struct rt_mutex_base *lock,
 		set_current_state(state);
 	}
 
+	trace_android_vh_rtmutex_wait_finish(lock);
 	__set_current_state(TASK_RUNNING);
 	return ret;
 }

@@ -4,6 +4,7 @@
  *
  * (C) 2004 Nadia Yvette Chambers, Oracle
  */
+#include <trace/hooks/sched.h>
 
 void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *name, struct lock_class_key *key)
 {
@@ -202,10 +203,13 @@ EXPORT_SYMBOL_GPL(__wake_up_locked_key_bookmark);
 void __wake_up_sync_key(struct wait_queue_head *wq_head, unsigned int mode,
 			void *key)
 {
+	int wake_flags = WF_SYNC;
+
 	if (unlikely(!wq_head))
 		return;
 
-	__wake_up_common_lock(wq_head, mode, 1, WF_SYNC, key);
+	trace_android_vh_set_wake_flags(&wake_flags, &mode);
+	__wake_up_common_lock(wq_head, mode, 1, wake_flags, key);
 }
 EXPORT_SYMBOL_GPL(__wake_up_sync_key);
 
@@ -425,11 +429,6 @@ int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, i
 }
 EXPORT_SYMBOL(autoremove_wake_function);
 
-static inline bool is_kthread_should_stop(void)
-{
-	return (current->flags & PF_KTHREAD) && kthread_should_stop();
-}
-
 /*
  * DEFINE_WAIT_FUNC(wait, woken_wake_func);
  *
@@ -459,7 +458,7 @@ long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
 	 * or woken_wake_function() sees our store to current->state.
 	 */
 	set_current_state(mode); /* A */
-	if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
+	if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !kthread_should_stop_or_park())
 		timeout = schedule_timeout(timeout);
 	__set_current_state(TASK_RUNNING);
 

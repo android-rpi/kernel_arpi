@@ -13,14 +13,34 @@
 	*(__kvm_ex_table)					\
 	__stop___kvm_ex_table = .;
 
-#define HYPERVISOR_DATA_SECTIONS				\
+#ifdef CONFIG_TRACING
+#define HYPERVISOR_EVENT_IDS 					\
+	. = ALIGN(PAGE_SIZE);					\
+	__hyp_event_ids_start = .;				\
+	*(HYP_SECTION_NAME(.event_ids))				\
+	__hyp_event_ids_end = .;
+#else
+#define HYPERVISOR_EVENT_IDS
+#endif
+
+#define HYPERVISOR_RODATA_SECTIONS				\
 	HYP_SECTION_NAME(.rodata) : {				\
 		. = ALIGN(PAGE_SIZE);				\
 		__hyp_rodata_start = .;				\
 		*(HYP_SECTION_NAME(.data..ro_after_init))	\
 		*(HYP_SECTION_NAME(.rodata))			\
+		HYPERVISOR_EVENT_IDS				\
 		. = ALIGN(PAGE_SIZE);				\
 		__hyp_rodata_end = .;				\
+	}
+
+#define HYPERVISOR_DATA_SECTION					\
+	HYP_SECTION_NAME(.data) : {				\
+		. = ALIGN(PAGE_SIZE);				\
+		__hyp_data_start = .;				\
+		*(HYP_SECTION_NAME(.data))			\
+		. = ALIGN(PAGE_SIZE);				\
+		__hyp_data_end = .;				\
 	}
 
 #define HYPERVISOR_PERCPU_SECTION				\
@@ -51,9 +71,11 @@
 #define SBSS_ALIGN			PAGE_SIZE
 #else /* CONFIG_KVM */
 #define HYPERVISOR_EXTABLE
-#define HYPERVISOR_DATA_SECTIONS
+#define HYPERVISOR_RODATA_SECTIONS
+#define HYPERVISOR_DATA_SECTION
 #define HYPERVISOR_PERCPU_SECTION
 #define HYPERVISOR_RELOC_SECTION
+#define HYPERVISOR_EVENTS
 #define SBSS_ALIGN			0
 #endif
 
@@ -119,6 +141,17 @@ jiffies = jiffies_64;
 	*(.entry.tramp.rodata)
 #else
 #define TRAMP_TEXT
+#endif
+
+#ifdef CONFIG_UNWIND_TABLES
+#define UNWIND_DATA_SECTIONS				\
+	.eh_frame : {					\
+		__eh_frame_start = .;			\
+		*(.eh_frame)				\
+		__eh_frame_end = .;			\
+	}
+#else
+#define UNWIND_DATA_SECTIONS
 #endif
 
 /*
@@ -188,7 +221,15 @@ SECTIONS
 	/* everything from this point to __init_begin will be marked RO NX */
 	RO_DATA(PAGE_SIZE)
 
-	HYPERVISOR_DATA_SECTIONS
+	HYPERVISOR_RODATA_SECTIONS
+
+#ifdef CONFIG_TRACING
+	.rodata.hyp_events : {
+		__hyp_events_start = .;
+		*(_hyp_events)
+		__hyp_events_end = .;
+	}
+#endif
 
 	/* code sections that are never executed via the kernel mapping */
 	.rodata.text : {
@@ -230,6 +271,8 @@ SECTIONS
 		*(.altinstructions)
 		__alt_instructions_end = .;
 	}
+
+	UNWIND_DATA_SECTIONS
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__inittext_end = .;
@@ -275,6 +318,8 @@ SECTIONS
 	_data = .;
 	_sdata = .;
 	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, THREAD_ALIGN)
+
+	HYPERVISOR_DATA_SECTION
 
 	/*
 	 * Data written with the MMU off but read with the MMU on requires

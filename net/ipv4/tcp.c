@@ -828,9 +828,7 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 			 */
 			if (!skb_queue_empty(&sk->sk_receive_queue))
 				break;
-			ret = sk_wait_data(sk, &timeo, NULL);
-			if (ret < 0)
-				break;
+			sk_wait_data(sk, &timeo, NULL);
 			if (signal_pending(current)) {
 				ret = sock_intr_errno(timeo);
 				break;
@@ -1493,22 +1491,6 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 }
 EXPORT_SYMBOL(tcp_sendmsg);
 
-void tcp_splice_eof(struct socket *sock)
-{
-	struct sock *sk = sock->sk;
-	struct tcp_sock *tp = tcp_sk(sk);
-	int mss_now, size_goal;
-
-	if (!tcp_write_queue_tail(sk))
-		return;
-
-	lock_sock(sk);
-	mss_now = tcp_send_mss(sk, &size_goal, 0);
-	tcp_push(sk, 0, mss_now, tp->nonagle, size_goal);
-	release_sock(sk);
-}
-EXPORT_SYMBOL_GPL(tcp_splice_eof);
-
 /*
  *	Handle reading urgent data. BSD has very simple semantics for
  *	this, no blocking and very strange errors 8)
@@ -1897,10 +1879,10 @@ int tcp_mmap(struct file *file, struct socket *sock,
 {
 	if (vma->vm_flags & (VM_WRITE | VM_EXEC))
 		return -EPERM;
-	vma->vm_flags &= ~(VM_MAYWRITE | VM_MAYEXEC);
+	vm_flags_clear(vma, VM_MAYWRITE | VM_MAYEXEC);
 
 	/* Instruct vm_insert_page() to not mmap_read_lock(mm) */
-	vma->vm_flags |= VM_MIXEDMAP;
+	vm_flags_set(vma, VM_MIXEDMAP);
 
 	vma->vm_ops = &tcp_vm_ops;
 	return 0;
@@ -2578,11 +2560,7 @@ static int tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len,
 			__sk_flush_backlog(sk);
 		} else {
 			tcp_cleanup_rbuf(sk, copied);
-			err = sk_wait_data(sk, &timeo, last);
-			if (err < 0) {
-				err = copied ? : err;
-				goto out;
-			}
+			sk_wait_data(sk, &timeo, last);
 		}
 
 		if ((flags & MSG_PEEK) &&
@@ -3105,6 +3083,12 @@ int tcp_disconnect(struct sock *sk, int flags)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int old_state = sk->sk_state;
 	u32 seq;
+
+	/* Deny disconnect if other threads are blocked in sk_wait_event()
+	 * or inet_wait_for_connect().
+	 */
+	if (sk->sk_wait_pending)
+		return -EBUSY;
 
 	if (old_state != TCP_CLOSE)
 		tcp_set_state(sk, TCP_CLOSE);

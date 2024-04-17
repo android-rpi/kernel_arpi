@@ -28,9 +28,12 @@ config ARM64
 	select ARCH_HAS_FORTIFY_SOURCE
 	select ARCH_HAS_GCOV_PROFILE_ALL
 	select ARCH_HAS_GIGANTIC_PAGE
+	select ARCH_HAS_IOREMAP_PHYS_HOOKS
 	select ARCH_HAS_KCOV
 	select ARCH_HAS_KEEPINITRD
 	select ARCH_HAS_MEMBARRIER_SYNC_CORE
+	select ARCH_HAS_MEM_ENCRYPT
+	select ARCH_HAS_MEM_RELINQUISH
 	select ARCH_HAS_NON_OVERLAPPING_ADDRESS_SPACE
 	select ARCH_HAS_PTE_DEVMAP
 	select ARCH_HAS_PTE_SPECIAL
@@ -93,6 +96,7 @@ config ARM64
 	select ARCH_SUPPORTS_INT128 if CC_HAS_INT128
 	select ARCH_SUPPORTS_NUMA_BALANCING
 	select ARCH_SUPPORTS_PAGE_TABLE_CHECK
+	select ARCH_SUPPORTS_PER_VMA_LOCK
 	select ARCH_WANT_COMPAT_IPC_PARSE_VERSION if COMPAT
 	select ARCH_WANT_DEFAULT_BPF_JIT
 	select ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
@@ -140,6 +144,7 @@ config ARM64
 	select GENERIC_GETTIMEOFDAY
 	select GENERIC_VDSO_TIME_NS
 	select HARDIRQS_SW_RESEND
+	select HAVE_MOD_ARCH_SPECIFIC if (ARM64_MODULE_PLTS || KVM)
 	select HAVE_MOVE_PMD
 	select HAVE_MOVE_PUD
 	select HAVE_PCI
@@ -370,30 +375,14 @@ config KASAN_SHADOW_OFFSET
 	default 0xeffffff800000000 if ARM64_VA_BITS_36 && KASAN_SW_TAGS
 	default 0xffffffffffffffff
 
+config UNWIND_TABLES
+	bool
+
 source "arch/arm64/Kconfig.platforms"
 
 menu "Kernel Features"
 
 menu "ARM errata workarounds via the alternatives framework"
-
-config AMPERE_ERRATUM_AC03_CPU_38
-        bool "AmpereOne: AC03_CPU_38: Certain bits in the Virtualization Translation Control Register and Translation Control Registers do not follow RES0 semantics"
-	default y
-	help
-	  This option adds an alternative code sequence to work around Ampere
-	  erratum AC03_CPU_38 on AmpereOne.
-
-	  The affected design reports FEAT_HAFDBS as not implemented in
-	  ID_AA64MMFR1_EL1.HAFDBS, but (V)TCR_ELx.{HA,HD} are not RES0
-	  as required by the architecture. The unadvertised HAFDBS
-	  implementation suffers from an additional erratum where hardware
-	  A/D updates can occur after a PTE has been marked invalid.
-
-	  The workaround forces KVM to explicitly set VTCR_EL2.HA to 0,
-	  which avoids enabling unadvertised hardware Access Flag management
-	  at stage-2.
-
-	  If unsure, say Y.
 
 config ARM64_WORKAROUND_CLEAN_CACHE
 	bool
@@ -653,7 +642,6 @@ config ARM64_WORKAROUND_REPEAT_TLBI
 
 config ARM64_ERRATUM_2441007
 	bool "Cortex-A55: Completion of affected memory accesses might not be guaranteed by completion of a TLBI"
-	default y
 	select ARM64_WORKAROUND_REPEAT_TLBI
 	help
 	  This option adds a workaround for ARM Cortex-A55 erratum #2441007.
@@ -892,7 +880,6 @@ config ARM64_ERRATUM_2224489
 
 config ARM64_ERRATUM_2441009
 	bool "Cortex-A510: Completion of affected memory accesses might not be guaranteed by completion of a TLBI"
-	default y
 	select ARM64_WORKAROUND_REPEAT_TLBI
 	help
 	  This option adds a workaround for ARM Cortex-A510 erratum #2441009.
@@ -1166,6 +1153,23 @@ config SOCIONEXT_SYNQUACER_PREITS
 	help
 	  Socionext Synquacer SoCs implement a separate h/w block to generate
 	  MSI doorbell writes with non-zero values for the device ID.
+
+	  If unsure, say Y.
+
+config ANDROID_ARM64_WORKAROUND_DMA_BEYOND_POC
+	bool "Remove cacheable aliases of non-cacheable DMA buffers at stage-2"
+	default y
+	depends on KVM
+	help
+	  Some SoCs integrate non-coherent DMA-capable peripherals beyond
+	  the Point of Coherency (PoC), resulting in loss of coherency
+	  with non-cacheable mappings on the CPU in the presence of a
+	  cacheable alias.
+
+	  This workaround provides a mechanism (controlled by the kernel
+	  command-line) to remap pages as non-cacheable in pKVM's stage-2
+	  mapping for the host, thereby removing any cacheable aliases
+	  that may be present in the stage-1 mapping.
 
 	  If unsure, say Y.
 
@@ -2084,7 +2088,6 @@ config ARM64_SME
 config ARM64_MODULE_PLTS
 	bool "Use PLTs to allow module memory to spill over into vmalloc area"
 	depends on MODULES
-	select HAVE_MOD_ARCH_SPECIFIC
 	help
 	  Allocate PLTs when loading modules so that jumps and calls whose
 	  targets are too far away for their relative offsets to be encoded
@@ -2195,6 +2198,15 @@ config ARCH_NR_GPIO
 
           If unsure, leave the default value.
 
+config UNWIND_PATCH_PAC_INTO_SCS
+	bool "Enable shadow call stack dynamically using code patching"
+	# needs Clang with https://reviews.llvm.org/D111780 incorporated
+	depends on CC_IS_CLANG && CLANG_VERSION >= 150000
+	depends on ARM64_PTR_AUTH_KERNEL && CC_HAS_BRANCH_PROT_PAC_RET
+	depends on SHADOW_CALL_STACK
+	select UNWIND_TABLES
+	select DYNAMIC_SCS
+
 endmenu # "Kernel Features"
 
 menu "Boot options"
@@ -2229,6 +2241,12 @@ config CMDLINE_FROM_BOOTLOADER
 	  Uses the command-line options passed by the boot loader. If
 	  the boot loader doesn't provide any, the default kernel command
 	  string provided in CMDLINE will be used.
+
+config CMDLINE_EXTEND
+	bool "Extend bootloader kernel arguments"
+	help
+	  The command-line arguments provided by the boot loader will be
+	  appended to the default kernel command string.
 
 config CMDLINE_FORCE
 	bool "Always use the default kernel command string"

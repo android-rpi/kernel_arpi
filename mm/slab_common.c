@@ -31,6 +31,8 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/kmem.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
 
 enum slab_state slab_state;
 LIST_HEAD(slab_caches);
@@ -1100,6 +1102,8 @@ static void *__kmalloc_large_node(size_t size, gfp_t flags, int node)
 				      PAGE_SIZE << order);
 	}
 
+	trace_android_vh_kmalloc_large_alloced(page, order, flags);
+
 	ptr = kasan_kmalloc_large(ptr, size, flags);
 	/* As ptr might get tagged, call kmemleak hook after KASAN. */
 	kmemleak_alloc(ptr, size, 1, flags);
@@ -1200,6 +1204,7 @@ static void print_slabinfo_header(struct seq_file *m)
 	seq_puts(m, " : globalstat <listallocs> <maxobjs> <grown> <reaped> <error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow>");
 	seq_puts(m, " : cpustat <allochit> <allocmiss> <freehit> <freemiss>");
 #endif
+	trace_android_vh_print_slabinfo_header(m);
 	seq_putc(m, '\n');
 }
 
@@ -1235,6 +1240,7 @@ static void cache_show(struct kmem_cache *s, struct seq_file *m)
 	seq_printf(m, " : slabdata %6lu %6lu %6lu",
 		   sinfo.active_slabs, sinfo.num_slabs, sinfo.shared_avail);
 	slabinfo_show_stats(m, s);
+	trace_android_vh_cache_show(m, &sinfo, s);
 	seq_putc(m, '\n');
 }
 

@@ -9,6 +9,7 @@
 #include <linux/dma-map-ops.h>
 #include <linux/iommu.h>
 #include <xen/xen.h>
+#include <trace/hooks/iommu.h>
 
 #include <asm/cacheflush.h>
 #include <asm/xen/xen-ops.h>
@@ -66,15 +67,16 @@ void arch_setup_dma_ops(struct device *dev, u64 dma_base, u64 size,
 {
 	int cls = cache_line_size_of_cpu();
 
-	WARN_TAINT(!coherent && cls > ARCH_DMA_MINALIGN,
-		   TAINT_CPU_OUT_OF_SPEC,
-		   "%s %s: ARCH_DMA_MINALIGN smaller than CTR_EL0.CWG (%d < %d)",
-		   dev_driver_string(dev), dev_name(dev),
-		   ARCH_DMA_MINALIGN, cls);
+	if (!coherent && cls > ARCH_DMA_MINALIGN)
+		panic("%s %s: ARCH_DMA_MINALIGN smaller than CTR_EL0.CWG (%d < %d)",
+		      dev_driver_string(dev), dev_name(dev), ARCH_DMA_MINALIGN,
+		      cls);
 
 	dev->dma_coherent = coherent;
-	if (iommu)
+	if (iommu) {
 		iommu_setup_dma_ops(dev, dma_base, dma_base + size - 1);
+		trace_android_rvh_iommu_setup_dma_ops(dev, dma_base, dma_base + size - 1);
+	}
 
 	xen_setup_dma_ops(dev);
 }

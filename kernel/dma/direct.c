@@ -43,6 +43,7 @@ u64 dma_direct_get_required_mask(struct device *dev)
 
 	return (1ULL << (fls64(max_dma) - 1)) * 2 - 1;
 }
+EXPORT_SYMBOL_GPL(dma_direct_get_required_mask);
 
 static gfp_t dma_direct_optimal_gfp_mask(struct device *dev, u64 dma_mask,
 				  u64 *phys_limit)
@@ -60,7 +61,8 @@ static gfp_t dma_direct_optimal_gfp_mask(struct device *dev, u64 dma_mask,
 	*phys_limit = dma_to_phys(dev, dma_limit);
 	if (*phys_limit <= DMA_BIT_MASK(zone_dma_bits))
 		return GFP_DMA;
-	if (*phys_limit <= DMA_BIT_MASK(32))
+	if (*phys_limit <= DMA_BIT_MASK(32) &&
+		!zone_dma32_are_empty())
 		return GFP_DMA32;
 	return 0;
 }
@@ -145,7 +147,8 @@ again:
 
 		if (IS_ENABLED(CONFIG_ZONE_DMA32) &&
 		    phys_limit < DMA_BIT_MASK(64) &&
-		    !(gfp & (GFP_DMA32 | GFP_DMA))) {
+		    !(gfp & (GFP_DMA32 | GFP_DMA)) &&
+		    !zone_dma32_are_empty()) {
 			gfp |= GFP_DMA32;
 			goto again;
 		}
@@ -318,6 +321,7 @@ out_free_pages:
 	__dma_direct_free_pages(dev, page, size);
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(dma_direct_alloc);
 
 void dma_direct_free(struct device *dev, size_t size,
 		void *cpu_addr, dma_addr_t dma_addr, unsigned long attrs)
@@ -363,6 +367,7 @@ void dma_direct_free(struct device *dev, size_t size,
 
 	__dma_direct_free_pages(dev, dma_direct_to_page(dev, dma_addr), size);
 }
+EXPORT_SYMBOL_GPL(dma_direct_free);
 
 struct page *dma_direct_alloc_pages(struct device *dev, size_t size,
 		dma_addr_t *dma_handle, enum dma_data_direction dir, gfp_t gfp)

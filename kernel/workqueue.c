@@ -54,6 +54,10 @@
 
 #include "workqueue_internal.h"
 
+#include <trace/hooks/wqlockup.h>
+/* events/workqueue.h uses default TRACE_INCLUDE_PATH */
+#undef TRACE_INCLUDE_PATH
+
 enum {
 	/*
 	 * worker_pool flags
@@ -380,6 +384,9 @@ static void show_one_worker_pool(struct worker_pool *pool);
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/workqueue.h>
+
+EXPORT_TRACEPOINT_SYMBOL_GPL(workqueue_execute_start);
+EXPORT_TRACEPOINT_SYMBOL_GPL(workqueue_execute_end);
 
 #define assert_rcu_or_pool_mutex()					\
 	RCU_LOCKDEP_WARN(!rcu_read_lock_held() &&			\
@@ -1774,7 +1781,7 @@ bool queue_rcu_work(struct workqueue_struct *wq, struct rcu_work *rwork)
 
 	if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
 		rwork->wq = wq;
-		call_rcu(&rwork->rcu, rcu_work_rcufn);
+		call_rcu_hurry(&rwork->rcu, rcu_work_rcufn);
 		return true;
 	}
 
@@ -4956,6 +4963,7 @@ void wq_worker_comm(char *buf, size_t size, struct task_struct *task)
 
 	mutex_unlock(&wq_pool_attach_mutex);
 }
+EXPORT_SYMBOL_GPL(wq_worker_comm);
 
 #ifdef CONFIG_SMP
 
@@ -5185,54 +5193,50 @@ static void work_for_cpu_fn(struct work_struct *work)
 }
 
 /**
- * work_on_cpu_key - run a function in thread context on a particular cpu
+ * work_on_cpu - run a function in thread context on a particular cpu
  * @cpu: the cpu to run on
  * @fn: the function to run
  * @arg: the function arg
- * @key: The lock class key for lock debugging purposes
  *
  * It is up to the caller to ensure that the cpu doesn't go offline.
  * The caller must not hold any locks which would prevent @fn from completing.
  *
  * Return: The value @fn returns.
  */
-long work_on_cpu_key(int cpu, long (*fn)(void *),
-		     void *arg, struct lock_class_key *key)
+long work_on_cpu(int cpu, long (*fn)(void *), void *arg)
 {
 	struct work_for_cpu wfc = { .fn = fn, .arg = arg };
 
-	INIT_WORK_ONSTACK_KEY(&wfc.work, work_for_cpu_fn, key);
+	INIT_WORK_ONSTACK(&wfc.work, work_for_cpu_fn);
 	schedule_work_on(cpu, &wfc.work);
 	flush_work(&wfc.work);
 	destroy_work_on_stack(&wfc.work);
 	return wfc.ret;
 }
-EXPORT_SYMBOL_GPL(work_on_cpu_key);
+EXPORT_SYMBOL_GPL(work_on_cpu);
 
 /**
- * work_on_cpu_safe_key - run a function in thread context on a particular cpu
+ * work_on_cpu_safe - run a function in thread context on a particular cpu
  * @cpu: the cpu to run on
  * @fn:  the function to run
  * @arg: the function argument
- * @key: The lock class key for lock debugging purposes
  *
  * Disables CPU hotplug and calls work_on_cpu(). The caller must not hold
  * any locks which would prevent @fn from completing.
  *
  * Return: The value @fn returns.
  */
-long work_on_cpu_safe_key(int cpu, long (*fn)(void *),
-			  void *arg, struct lock_class_key *key)
+long work_on_cpu_safe(int cpu, long (*fn)(void *), void *arg)
 {
 	long ret = -ENODEV;
 
 	cpus_read_lock();
 	if (cpu_online(cpu))
-		ret = work_on_cpu_key(cpu, fn, arg, key);
+		ret = work_on_cpu(cpu, fn, arg);
 	cpus_read_unlock();
 	return ret;
 }
-EXPORT_SYMBOL_GPL(work_on_cpu_safe_key);
+EXPORT_SYMBOL_GPL(work_on_cpu_safe);
 #endif /* CONFIG_SMP */
 
 #ifdef CONFIG_FREEZER
@@ -5877,6 +5881,7 @@ static void wq_watchdog_timer_fn(struct timer_list *unused)
 			pr_cont_pool_info(pool);
 			pr_cont(" stuck for %us!\n",
 				jiffies_to_msecs(now - pool_ts) / 1000);
+			trace_android_vh_wq_lockup_pool(pool->cpu, pool_ts);
 		}
 	}
 

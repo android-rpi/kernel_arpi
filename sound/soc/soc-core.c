@@ -348,7 +348,7 @@ void snd_soc_close_delayed_work(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int playback = SNDRV_PCM_STREAM_PLAYBACK;
 
-	mutex_lock_nested(&rtd->card->pcm_mutex, rtd->card->pcm_subclass);
+	snd_soc_dpcm_mutex_lock(rtd);
 
 	dev_dbg(rtd->dev,
 		"ASoC: pop wq checking: %s status: %s waiting: %s\n",
@@ -364,7 +364,7 @@ void snd_soc_close_delayed_work(struct snd_soc_pcm_runtime *rtd)
 					  SND_SOC_DAPM_STREAM_STOP);
 	}
 
-	mutex_unlock(&rtd->card->pcm_mutex);
+	snd_soc_dpcm_mutex_unlock(rtd);
 }
 EXPORT_SYMBOL_GPL(snd_soc_close_delayed_work);
 
@@ -1944,7 +1944,7 @@ static int snd_soc_bind_card(struct snd_soc_card *card)
 	int ret, i;
 
 	mutex_lock(&client_mutex);
-	mutex_lock_nested(&card->mutex, SND_SOC_CARD_CLASS_INIT);
+	snd_soc_card_mutex_lock_root(card);
 
 	snd_soc_dapm_init(&card->dapm, card, NULL);
 
@@ -2101,7 +2101,7 @@ probe_end:
 	if (ret < 0)
 		soc_cleanup_card_resources(card);
 
-	mutex_unlock(&card->mutex);
+	snd_soc_card_mutex_unlock(card);
 	mutex_unlock(&client_mutex);
 
 	return ret;
@@ -3232,6 +3232,39 @@ int snd_soc_get_dai_id(struct device_node *ep)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snd_soc_get_dai_id);
+
+/**
+ * snd_soc_info_multi_ext - external single mixer info callback
+ * @kcontrol: mixer control
+ * @uinfo: control element information
+ *
+ * Callback to provide information about a single external mixer control.
+ * that accepts multiple input.
+ *
+ * Returns 0 for success.
+ */
+int snd_soc_info_multi_ext(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_info *uinfo)
+{
+	struct soc_multi_mixer_control *mc =
+		(struct soc_multi_mixer_control *)kcontrol->private_value;
+	int platform_max;
+
+	if (!mc->platform_max)
+		mc->platform_max = mc->max;
+	platform_max = mc->platform_max;
+
+	if (platform_max == 1 && !strnstr(kcontrol->id.name, " Volume", 30))
+		uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
+	else
+		uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+
+	uinfo->count = mc->count;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = platform_max;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(snd_soc_info_multi_ext);
 
 int snd_soc_get_dai_name(const struct of_phandle_args *args,
 				const char **dai_name)

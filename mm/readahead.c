@@ -129,6 +129,7 @@
 #include <linux/blk-cgroup.h>
 #include <linux/fadvise.h>
 #include <linux/sched/mm.h>
+#include <trace/hooks/mm.h>
 
 #include "internal.h"
 
@@ -144,6 +145,15 @@ file_ra_state_init(struct file_ra_state *ra, struct address_space *mapping)
 }
 EXPORT_SYMBOL_GPL(file_ra_state_init);
 
+gfp_t readahead_gfp_mask(struct address_space *x)
+{
+	gfp_t mask = __readahead_gfp_mask(x);
+
+	trace_android_rvh_set_readahead_gfp_mask(&mask);
+	return mask;
+}
+EXPORT_SYMBOL_GPL(readahead_gfp_mask);
+
 static void read_pages(struct readahead_control *rac)
 {
 	const struct address_space_operations *aops = rac->mapping->a_ops;
@@ -157,6 +167,7 @@ static void read_pages(struct readahead_control *rac)
 		psi_memstall_enter(&rac->_pflags);
 	blk_start_plug(&plug);
 
+	trace_android_vh_read_pages(rac);
 	if (aops->readahead) {
 		aops->readahead(rac);
 		/*
@@ -580,6 +591,8 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	 */
 	if (req_size > max_pages && bdi->io_pages > max_pages)
 		max_pages = min(req_size, bdi->io_pages);
+
+	trace_android_vh_ra_tuning_max_page(ractl, &max_pages);
 
 	/*
 	 * start of file

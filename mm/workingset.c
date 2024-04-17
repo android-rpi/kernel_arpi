@@ -223,7 +223,7 @@ static void *lru_gen_eviction(struct folio *folio)
 	unsigned long token;
 	unsigned long min_seq;
 	struct lruvec *lruvec;
-	struct lru_gen_struct *lrugen;
+	struct lru_gen_folio *lrugen;
 	int type = folio_is_file_lru(folio);
 	int delta = folio_nr_pages(folio);
 	int refs = folio_lru_refs(folio);
@@ -252,7 +252,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	unsigned long token;
 	unsigned long min_seq;
 	struct lruvec *lruvec;
-	struct lru_gen_struct *lrugen;
+	struct lru_gen_folio *lrugen;
 	struct mem_cgroup *memcg;
 	struct pglist_data *pgdat;
 	int type = folio_is_file_lru(folio);
@@ -272,6 +272,8 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	lruvec = mem_cgroup_lruvec(memcg, pgdat);
 	lrugen = &lruvec->lrugen;
 
+	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
+
 	min_seq = READ_ONCE(lrugen->min_seq[type]);
 	if ((token >> LRU_REFS_WIDTH) != (min_seq & (EVICTION_MASK >> LRU_REFS_WIDTH)))
 		goto unlock;
@@ -282,7 +284,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow)
 	tier = lru_tier_from_refs(refs);
 
 	atomic_long_add(delta, &lrugen->refaulted[hist][type][tier]);
-	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
+	mod_lruvec_state(lruvec, WORKINGSET_ACTIVATE_BASE + type, delta);
 
 	/*
 	 * Count the following two cases as stalls:

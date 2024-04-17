@@ -636,6 +636,7 @@ static bool hidinput_set_battery_charge_status(struct hid_device *dev,
 		dev->battery_charge_status = value ?
 					     POWER_SUPPLY_STATUS_CHARGING :
 					     POWER_SUPPLY_STATUS_DISCHARGING;
+		power_supply_changed(dev->battery);
 		return true;
 	}
 
@@ -1265,6 +1266,16 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			return;
 		}
 		goto unknown;
+	case HID_UP_CAMERA:
+		switch (usage->hid & HID_USAGE) {
+		case 0x020:
+			map_key_clear(KEY_CAMERA_FOCUS);	break;
+		case 0x021:
+			map_key_clear(KEY_CAMERA);		break;
+		default:
+			goto ignore;
+		}
+		break;
 
 	case HID_UP_HPVENDOR:	/* Reported on a Dutch layout HP5308 */
 		set_bit(EV_REP, input->evbit);

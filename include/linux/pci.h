@@ -41,6 +41,7 @@
 #include <uapi/linux/pci.h>
 
 #include <linux/pci_ids.h>
+#include <linux/android_kabi.h>
 
 #define PCI_STATUS_ERROR_BITS (PCI_STATUS_DETECTED_PARITY  | \
 			       PCI_STATUS_SIG_SYSTEM_ERROR | \
@@ -409,7 +410,6 @@ struct pci_dev {
 	 */
 	unsigned int	irq;
 	struct resource resource[DEVICE_COUNT_RESOURCE]; /* I/O and memory regions + expansion ROMs */
-	struct resource driver_exclusive_resource;	 /* driver exclusive resource ranges */
 
 	bool		match_driver;		/* Skip attaching driver */
 
@@ -466,7 +466,6 @@ struct pci_dev {
 	pci_dev_flags_t dev_flags;
 	atomic_t	enable_cnt;	/* pci_enable_device has been called */
 
-	spinlock_t	pcie_cap_lock;		/* Protects RMW ops in capability accessors */
 	u32		saved_config_space[16]; /* Config space saved at suspend time */
 	struct hlist_head saved_cap_space;
 	int		rom_attr_enabled;	/* Display of ROM attribute enabled? */
@@ -525,6 +524,11 @@ struct pci_dev {
 
 	/* These methods index pci_reset_fn_methods[] */
 	u8 reset_methods[PCI_NUM_RESET_METHODS]; /* In priority order */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 static inline struct pci_dev *pci_physfn(struct pci_dev *dev)
@@ -589,6 +593,10 @@ struct pci_host_bridge {
 			resource_size_t start,
 			resource_size_t size,
 			resource_size_t align);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+
 	unsigned long	private[] ____cacheline_aligned;
 };
 
@@ -673,6 +681,11 @@ struct pci_bus {
 	struct bin_attribute	*legacy_mem;	/* Legacy mem */
 	unsigned int		is_added:1;
 	unsigned int		unsafe_warn:1;	/* warned about RW1C config write */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 #define to_pci_bus(n)	container_of(n, struct pci_bus, dev)
@@ -771,6 +784,8 @@ struct pci_ops {
 	void __iomem *(*map_bus)(struct pci_bus *bus, unsigned int devfn, int where);
 	int (*read)(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *val);
 	int (*write)(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 val);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -846,6 +861,8 @@ struct pci_error_handlers {
 
 	/* Device driver may resume normal operations */
 	void (*resume)(struct pci_dev *dev);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 
@@ -925,6 +942,11 @@ struct pci_driver {
 	struct device_driver	driver;
 	struct pci_dynids	dynids;
 	bool driver_managed_dma;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 static inline struct pci_driver *to_pci_driver(struct device_driver *drv)
@@ -1210,39 +1232,10 @@ int pcie_capability_read_word(struct pci_dev *dev, int pos, u16 *val);
 int pcie_capability_read_dword(struct pci_dev *dev, int pos, u32 *val);
 int pcie_capability_write_word(struct pci_dev *dev, int pos, u16 val);
 int pcie_capability_write_dword(struct pci_dev *dev, int pos, u32 val);
-int pcie_capability_clear_and_set_word_unlocked(struct pci_dev *dev, int pos,
-						u16 clear, u16 set);
-int pcie_capability_clear_and_set_word_locked(struct pci_dev *dev, int pos,
-					      u16 clear, u16 set);
+int pcie_capability_clear_and_set_word(struct pci_dev *dev, int pos,
+				       u16 clear, u16 set);
 int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
 					u32 clear, u32 set);
-
-/**
- * pcie_capability_clear_and_set_word - RMW accessor for PCI Express Capability Registers
- * @dev:	PCI device structure of the PCI Express device
- * @pos:	PCI Express Capability Register
- * @clear:	Clear bitmask
- * @set:	Set bitmask
- *
- * Perform a Read-Modify-Write (RMW) operation using @clear and @set
- * bitmasks on PCI Express Capability Register at @pos. Certain PCI Express
- * Capability Registers are accessed concurrently in RMW fashion, hence
- * require locking which is handled transparently to the caller.
- */
-static inline int pcie_capability_clear_and_set_word(struct pci_dev *dev,
-						     int pos,
-						     u16 clear, u16 set)
-{
-	switch (pos) {
-	case PCI_EXP_LNKCTL:
-	case PCI_EXP_RTCTL:
-		return pcie_capability_clear_and_set_word_locked(dev, pos,
-								 clear, set);
-	default:
-		return pcie_capability_clear_and_set_word_unlocked(dev, pos,
-								   clear, set);
-	}
-}
 
 static inline int pcie_capability_set_word(struct pci_dev *dev, int pos,
 					   u16 set)
@@ -1438,21 +1431,6 @@ void pci_release_region(struct pci_dev *, int);
 int pci_request_selected_regions(struct pci_dev *, int, const char *);
 int pci_request_selected_regions_exclusive(struct pci_dev *, int, const char *);
 void pci_release_selected_regions(struct pci_dev *, int);
-
-static inline __must_check struct resource *
-pci_request_config_region_exclusive(struct pci_dev *pdev, unsigned int offset,
-				    unsigned int len, const char *name)
-{
-	return __request_region(&pdev->driver_exclusive_resource, offset, len,
-				name, IORESOURCE_EXCLUSIVE);
-}
-
-static inline void pci_release_config_region(struct pci_dev *pdev,
-					     unsigned int offset,
-					     unsigned int len)
-{
-	__release_region(&pdev->driver_exclusive_resource, offset, len);
-}
 
 /* drivers/pci/bus.c */
 void pci_add_resource(struct list_head *resources, struct resource *res);
@@ -2533,7 +2511,6 @@ void pci_uevent_ers(struct pci_dev *pdev, enum  pci_ers_result err_type);
 #define pci_crit(pdev, fmt, arg...)	dev_crit(&(pdev)->dev, fmt, ##arg)
 #define pci_err(pdev, fmt, arg...)	dev_err(&(pdev)->dev, fmt, ##arg)
 #define pci_warn(pdev, fmt, arg...)	dev_warn(&(pdev)->dev, fmt, ##arg)
-#define pci_warn_once(pdev, fmt, arg...) dev_warn_once(&(pdev)->dev, fmt, ##arg)
 #define pci_notice(pdev, fmt, arg...)	dev_notice(&(pdev)->dev, fmt, ##arg)
 #define pci_info(pdev, fmt, arg...)	dev_info(&(pdev)->dev, fmt, ##arg)
 #define pci_dbg(pdev, fmt, arg...)	dev_dbg(&(pdev)->dev, fmt, ##arg)

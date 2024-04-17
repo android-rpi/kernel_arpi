@@ -17,6 +17,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <uapi/linux/fscrypt.h>
+#include <linux/android_kabi.h>
 
 /*
  * The lengths of all file contents blocks must be divisible by this value.
@@ -65,6 +66,18 @@ struct fscrypt_name {
  * pages for writes and therefore won't need the fscrypt bounce page pool.
  */
 #define FS_CFLG_OWN_PAGES (1U << 1)
+
+/*
+ * If set, then fs/crypto/ will allow users to select a crypto data unit size
+ * that is less than the filesystem block size.  This is done via the
+ * log2_data_unit_size field of the fscrypt policy.  This flag is not compatible
+ * with filesystems that encrypt variable-length blocks (i.e. blocks that aren't
+ * all equal to filesystem's block size), for example as a result of
+ * compression.  It's also not compatible with the
+ * fscrypt_encrypt_block_inplace() and fscrypt_decrypt_block_inplace()
+ * functions.
+ */
+#define FS_CFLG_SUPPORTS_SUBBLOCK_DATA_UNITS (1U << 2)
 
 /* Crypto operations for filesystems */
 struct fscrypt_operations {
@@ -176,6 +189,13 @@ struct fscrypt_operations {
 	 */
 	struct block_device **(*get_devices)(struct super_block *sb,
 					     unsigned int *num_devs);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
+
+	ANDROID_OEM_DATA_ARRAY(1, 4);
 };
 
 static inline struct fscrypt_info *fscrypt_get_info(const struct inode *inode)
@@ -257,8 +277,8 @@ int fscrypt_encrypt_block_inplace(const struct inode *inode, struct page *page,
 				  unsigned int len, unsigned int offs,
 				  u64 lblk_num, gfp_t gfp_flags);
 
-int fscrypt_decrypt_pagecache_blocks(struct page *page, unsigned int len,
-				     unsigned int offs);
+int fscrypt_decrypt_pagecache_blocks(struct folio *folio, size_t len,
+				     size_t offs);
 int fscrypt_decrypt_block_inplace(const struct inode *inode, struct page *page,
 				  unsigned int len, unsigned int offs,
 				  u64 lblk_num);
@@ -309,8 +329,6 @@ fscrypt_free_dummy_policy(struct fscrypt_dummy_policy *dummy_policy)
 /* keyring.c */
 void fscrypt_destroy_keyring(struct super_block *sb);
 int fscrypt_ioctl_add_key(struct file *filp, void __user *arg);
-int fscrypt_add_test_dummy_key(struct super_block *sb,
-			       const struct fscrypt_dummy_policy *dummy_policy);
 int fscrypt_ioctl_remove_key(struct file *filp, void __user *arg);
 int fscrypt_ioctl_remove_key_all_users(struct file *filp, void __user *arg);
 int fscrypt_ioctl_get_key_status(struct file *filp, void __user *arg);
@@ -361,6 +379,7 @@ int __fscrypt_prepare_rename(struct inode *old_dir, struct dentry *old_dentry,
 			     unsigned int flags);
 int __fscrypt_prepare_lookup(struct inode *dir, struct dentry *dentry,
 			     struct fscrypt_name *fname);
+int fscrypt_prepare_lookup_partial(struct inode *dir, struct dentry *dentry);
 int __fscrypt_prepare_readdir(struct inode *dir);
 int __fscrypt_prepare_setattr(struct dentry *dentry, struct iattr *attr);
 int fscrypt_prepare_setflags(struct inode *inode,
@@ -422,9 +441,8 @@ static inline int fscrypt_encrypt_block_inplace(const struct inode *inode,
 	return -EOPNOTSUPP;
 }
 
-static inline int fscrypt_decrypt_pagecache_blocks(struct page *page,
-						   unsigned int len,
-						   unsigned int offs)
+static inline int fscrypt_decrypt_pagecache_blocks(struct folio *folio,
+						   size_t len, size_t offs)
 {
 	return -EOPNOTSUPP;
 }
@@ -528,13 +546,6 @@ static inline void fscrypt_destroy_keyring(struct super_block *sb)
 static inline int fscrypt_ioctl_add_key(struct file *filp, void __user *arg)
 {
 	return -EOPNOTSUPP;
-}
-
-static inline int
-fscrypt_add_test_dummy_key(struct super_block *sb,
-			   const struct fscrypt_dummy_policy *dummy_policy)
-{
-	return 0;
 }
 
 static inline int fscrypt_ioctl_remove_key(struct file *filp, void __user *arg)
@@ -683,6 +694,12 @@ static inline int __fscrypt_prepare_lookup(struct inode *dir,
 	return -EOPNOTSUPP;
 }
 
+static inline int fscrypt_prepare_lookup_partial(struct inode *dir,
+						 struct dentry *dentry)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int __fscrypt_prepare_readdir(struct inode *dir)
 {
 	return -EOPNOTSUPP;
@@ -808,6 +825,20 @@ static inline u64 fscrypt_limit_io_blocks(const struct inode *inode, u64 lblk,
 	return nr_blocks;
 }
 #endif /* !CONFIG_FS_ENCRYPTION_INLINE_CRYPT */
+
+#if IS_ENABLED(CONFIG_FS_ENCRYPTION) && IS_ENABLED(CONFIG_DM_DEFAULT_KEY)
+static inline bool
+fscrypt_inode_should_skip_dm_default_key(const struct inode *inode)
+{
+	return IS_ENCRYPTED(inode) && S_ISREG(inode->i_mode);
+}
+#else
+static inline bool
+fscrypt_inode_should_skip_dm_default_key(const struct inode *inode)
+{
+	return false;
+}
+#endif
 
 /**
  * fscrypt_inode_uses_inline_crypto() - test whether an inode uses inline

@@ -48,19 +48,25 @@ int fscrypt_policy_to_key_spec(const union fscrypt_policy *policy,
 		       FSCRYPT_KEY_IDENTIFIER_SIZE);
 		return 0;
 	default:
-		WARN_ON(1);
+		WARN_ON_ONCE(1);
 		return -EINVAL;
 	}
 }
 
-static const union fscrypt_policy *
-fscrypt_get_dummy_policy(struct super_block *sb)
+const union fscrypt_policy *fscrypt_get_dummy_policy(struct super_block *sb)
 {
 	if (!sb->s_cop->get_dummy_policy)
 		return NULL;
 	return sb->s_cop->get_dummy_policy(sb);
 }
 
+/*
+ * Return %true if the given combination of encryption modes is supported for v1
+ * (and later) encryption policies.
+ *
+ * Do *not* add anything new here, since v1 encryption policies are deprecated.
+ * New combinations of modes should go in fscrypt_valid_enc_modes_v2() only.
+ */
 static bool fscrypt_valid_enc_modes_v1(u32 contents_mode, u32 filenames_mode)
 {
 	if (contents_mode == FSCRYPT_MODE_AES_256_XTS &&
@@ -83,6 +89,11 @@ static bool fscrypt_valid_enc_modes_v2(u32 contents_mode, u32 filenames_mode)
 	if (contents_mode == FSCRYPT_MODE_AES_256_XTS &&
 	    filenames_mode == FSCRYPT_MODE_AES_256_HCTR2)
 		return true;
+
+	if (contents_mode == FSCRYPT_MODE_SM4_XTS &&
+	    filenames_mode == FSCRYPT_MODE_SM4_CTS)
+		return true;
+
 	return fscrypt_valid_enc_modes_v1(contents_mode, filenames_mode);
 }
 
@@ -147,9 +158,15 @@ static bool supported_iv_ino_lblk_policy(const struct fscrypt_policy_v2 *policy,
 			     type, sb->s_id);
 		return false;
 	}
-	if (lblk_bits > max_lblk_bits) {
+
+	/*
+	 * IV_INO_LBLK_64 and IV_INO_LBLK_32 both require that file data unit
+	 * indices fit in 32 bits.
+	 */
+	if (fscrypt_max_file_dun_bits(sb,
+			fscrypt_policy_v2_du_bits(policy, inode)) > 32) {
 		fscrypt_warn(inode,
-			     "Can't use %s policy on filesystem '%s' because its block numbers are too long",
+			     "Can't use %s policy on filesystem '%s' because its maximum file size is too large",
 			     type, sb->s_id);
 		return false;
 	}
@@ -220,6 +237,32 @@ static bool fscrypt_supported_v2_policy(const struct fscrypt_policy_v2 *policy,
 		fscrypt_warn(inode, "Mutually exclusive encryption flags (0x%02x)",
 			     policy->flags);
 		return false;
+	}
+
+	if (policy->log2_data_unit_size) {
+		if (!(inode->i_sb->s_cop->flags &
+		      FS_CFLG_SUPPORTS_SUBBLOCK_DATA_UNITS)) {
+			fscrypt_warn(inode,
+				     "Filesystem does not support configuring crypto data unit size");
+			return false;
+		}
+		if (policy->log2_data_unit_size > inode->i_blkbits ||
+		    policy->log2_data_unit_size < SECTOR_SHIFT /* 9 */) {
+			fscrypt_warn(inode,
+				     "Unsupported log2_data_unit_size in encryption policy: %d",
+				     policy->log2_data_unit_size);
+			return false;
+		}
+		if (policy->log2_data_unit_size != inode->i_blkbits &&
+		    (policy->flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32)) {
+			/*
+			 * Not safe to enable yet, as we need to ensure that DUN
+			 * wraparound can only occur on a FS block boundary.
+			 */
+			fscrypt_warn(inode,
+				     "Sub-block data units not yet supported with IV_INO_LBLK_32");
+			return false;
+		}
 	}
 
 	if ((policy->flags & FSCRYPT_POLICY_FLAG_DIRECT_KEY) &&
@@ -319,6 +362,7 @@ static int fscrypt_new_context(union fscrypt_context *ctx_u,
 		ctx->filenames_encryption_mode =
 			policy->filenames_encryption_mode;
 		ctx->flags = policy->flags;
+		ctx->log2_data_unit_size = policy->log2_data_unit_size;
 		memcpy(ctx->master_key_identifier,
 		       policy->master_key_identifier,
 		       sizeof(ctx->master_key_identifier));
@@ -379,6 +423,7 @@ int fscrypt_policy_from_context(union fscrypt_policy *policy_u,
 		policy->filenames_encryption_mode =
 			ctx->filenames_encryption_mode;
 		policy->flags = ctx->flags;
+		policy->log2_data_unit_size = ctx->log2_data_unit_size;
 		memcpy(policy->__reserved, ctx->__reserved,
 		       sizeof(policy->__reserved));
 		memcpy(policy->master_key_identifier,
@@ -452,7 +497,7 @@ static int set_encryption_policy(struct inode *inode,
 				     current->comm, current->pid);
 		break;
 	default:
-		WARN_ON(1);
+		WARN_ON_ONCE(1);
 		return -EINVAL;
 	}
 

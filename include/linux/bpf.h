@@ -28,6 +28,7 @@
 #include <linux/btf.h>
 #include <linux/rcupdate_trace.h>
 #include <linux/static_call.h>
+#include <linux/android_kabi.h>
 
 struct bpf_verifier_env;
 struct bpf_verifier_log;
@@ -102,11 +103,7 @@ struct bpf_map_ops {
 	/* funcs called by prog_array and perf_event_array map */
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
-	/* If need_defer is true, the implementation should guarantee that
-	 * the to-be-put element is still alive before the bpf program, which
-	 * may manipulate it, exists.
-	 */
-	void (*map_fd_put_ptr)(struct bpf_map *map, void *ptr, bool need_defer);
+	void (*map_fd_put_ptr)(void *ptr);
 	int (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 	u32 (*map_fd_sys_lookup_elem)(void *ptr);
 	void (*map_seq_show_elem)(struct bpf_map *map, void *key,
@@ -166,6 +163,9 @@ struct bpf_map_ops {
 
 	/* bpf_iter info used to open a seq_file */
 	const struct bpf_iter_seq_info *iter_seq_info;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 enum {
@@ -237,11 +237,7 @@ struct bpf_map {
 	 */
 	atomic64_t refcnt ____cacheline_aligned;
 	atomic64_t usercnt;
-	/* rcu is used before freeing and work is only used during freeing */
-	union {
-		struct work_struct work;
-		struct rcu_head rcu;
-	};
+	struct work_struct work;
 	struct mutex freeze_mutex;
 	atomic64_t writecnt;
 	/* 'Ownership' of program-containing map is claimed by the first program
@@ -257,8 +253,6 @@ struct bpf_map {
 	} owner;
 	bool bypass_spec_v1;
 	bool frozen; /* write-once; write-protected by freeze_mutex */
-	bool free_after_mult_rcu_gp;
-	s64 __percpu *elem_count;
 };
 
 static inline bool map_value_has_spin_lock(const struct bpf_map *map)
@@ -382,6 +376,8 @@ struct bpf_map_dev_ops {
 	int (*map_update_elem)(struct bpf_offloaded_map *map,
 			       void *key, void *value, u64 flags);
 	int (*map_delete_elem)(struct bpf_offloaded_map *map, void *key);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_offloaded_map {
@@ -712,14 +708,10 @@ bpf_ctx_record_field_size(struct bpf_insn_access_aux *aux, u32 size)
 	aux->ctx_field_size = size;
 }
 
-static bool bpf_is_ldimm64(const struct bpf_insn *insn)
-{
-	return insn->code == (BPF_LD | BPF_IMM | BPF_DW);
-}
-
 static inline bool bpf_pseudo_func(const struct bpf_insn *insn)
 {
-	return bpf_is_ldimm64(insn) && insn->src_reg == BPF_PSEUDO_FUNC;
+	return insn->code == (BPF_LD | BPF_IMM | BPF_DW) &&
+	       insn->src_reg == BPF_PSEUDO_FUNC;
 }
 
 struct bpf_prog_ops {
@@ -752,6 +744,7 @@ struct bpf_verifier_ops {
 				 const struct btf_type *t, int off, int size,
 				 enum bpf_access_type atype,
 				 u32 *next_btf_id, enum bpf_type_flag *flag);
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_prog_offload_ops {
@@ -767,6 +760,7 @@ struct bpf_prog_offload_ops {
 	int (*prepare)(struct bpf_prog *prog);
 	int (*translate)(struct bpf_prog *prog);
 	void (*destroy)(struct bpf_prog *prog);
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_prog_offload {
@@ -779,6 +773,7 @@ struct bpf_prog_offload {
 	bool			opt_failed;
 	void			*jited_image;
 	u32			jited_len;
+	ANDROID_KABI_RESERVE(1);
 };
 
 enum bpf_cgroup_storage_type {
@@ -948,7 +943,9 @@ struct bpf_trampoline {
 	int progs_cnt[BPF_TRAMP_MAX];
 	/* Executable image of trampoline */
 	struct bpf_tramp_image *cur_image;
+	u64 selector;
 	struct module *mod;
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_attach_target_info {
@@ -979,6 +976,7 @@ struct bpf_dispatcher {
 	struct static_call_key *sc_key;
 	void *sc_tramp;
 #endif
+	ANDROID_KABI_RESERVE(1);
 };
 
 static __always_inline __nocfi unsigned int bpf_dispatcher_nop_func(
@@ -1231,6 +1229,7 @@ struct bpf_prog_aux {
 		struct work_struct work;
 		struct rcu_head	rcu;
 	};
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_prog {
@@ -1260,6 +1259,7 @@ struct bpf_prog {
 					    const struct bpf_insn *insn);
 	struct bpf_prog_aux	*aux;		/* Auxiliary fields */
 	struct sock_fprog_kern	*orig_prog;	/* Original BPF program */
+	ANDROID_KABI_RESERVE(1);
 	/* Instructions for interpreter */
 	union {
 		DECLARE_FLEX_ARRAY(struct sock_filter, insns);
@@ -1293,6 +1293,7 @@ struct bpf_link_ops {
 	void (*show_fdinfo)(const struct bpf_link *link, struct seq_file *seq);
 	int (*fill_link_info)(const struct bpf_link *link,
 			      struct bpf_link_info *info);
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct bpf_tramp_link {
@@ -1340,6 +1341,7 @@ struct bpf_struct_ops {
 	struct btf_func_model func_models[BPF_STRUCT_OPS_MAX_NR_MEMBERS];
 	u32 type_id;
 	u32 value_id;
+	ANDROID_KABI_RESERVE(1);
 };
 
 #if defined(CONFIG_BPF_JIT) && defined(CONFIG_BPF_SYSCALL)
@@ -1800,35 +1802,6 @@ bpf_map_alloc_percpu(const struct bpf_map *map, size_t size, size_t align,
 	return __alloc_percpu_gfp(size, align, flags);
 }
 #endif
-
-static inline int
-bpf_map_init_elem_count(struct bpf_map *map)
-{
-	size_t size = sizeof(*map->elem_count), align = size;
-	gfp_t flags = GFP_USER | __GFP_NOWARN;
-
-	map->elem_count = bpf_map_alloc_percpu(map, size, align, flags);
-	if (!map->elem_count)
-		return -ENOMEM;
-
-	return 0;
-}
-
-static inline void
-bpf_map_free_elem_count(struct bpf_map *map)
-{
-	free_percpu(map->elem_count);
-}
-
-static inline void bpf_map_inc_elem_count(struct bpf_map *map)
-{
-	this_cpu_inc(*map->elem_count);
-}
-
-static inline void bpf_map_dec_elem_count(struct bpf_map *map)
-{
-	this_cpu_dec(*map->elem_count);
-}
 
 extern int sysctl_unprivileged_bpf_disabled;
 

@@ -365,18 +365,9 @@ static int bpf_adj_delta_to_imm(struct bpf_insn *insn, u32 pos, s32 end_old,
 static int bpf_adj_delta_to_off(struct bpf_insn *insn, u32 pos, s32 end_old,
 				s32 end_new, s32 curr, const bool probe_pass)
 {
-	s64 off_min, off_max, off;
+	const s32 off_min = S16_MIN, off_max = S16_MAX;
 	s32 delta = end_new - end_old;
-
-	if (insn->code == (BPF_JMP32 | BPF_JA)) {
-		off = insn->imm;
-		off_min = S32_MIN;
-		off_max = S32_MAX;
-	} else {
-		off = insn->off;
-		off_min = S16_MIN;
-		off_max = S16_MAX;
-	}
+	s32 off = insn->off;
 
 	if (curr < pos && curr + off + 1 >= end_old)
 		off += delta;
@@ -384,12 +375,8 @@ static int bpf_adj_delta_to_off(struct bpf_insn *insn, u32 pos, s32 end_old,
 		off -= delta;
 	if (off < off_min || off > off_max)
 		return -ERANGE;
-	if (!probe_pass) {
-		if (insn->code == (BPF_JMP32 | BPF_JA))
-			insn->imm = off;
-		else
-			insn->off = off;
-	}
+	if (!probe_pass)
+		insn->off = off;
 	return 0;
 }
 
@@ -1599,7 +1586,6 @@ EXPORT_SYMBOL_GPL(__bpf_call_base);
 	INSN_3(JMP, JSLE, K),			\
 	INSN_3(JMP, JSET, K),			\
 	INSN_2(JMP, JA),			\
-	INSN_2(JMP32, JA),			\
 	/* Store instructions. */		\
 	/*   Register based. */			\
 	INSN_3(STX, MEM,  B),			\
@@ -1875,9 +1861,6 @@ out:
 	}
 	JMP_JA:
 		insn += insn->off;
-		CONT;
-	JMP32_JA:
-		insn += insn->imm;
 		CONT;
 	JMP_EXIT:
 		return BPF_R0;

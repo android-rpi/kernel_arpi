@@ -25,9 +25,14 @@
 #include <linux/compat.h>
 
 #include <linux/uaccess.h>
-
+#include <trace/hooks/mm.h>
 #include "internal.h"
 #include "swap.h"
+
+#ifndef __GENKSYMS__
+#include <trace/hooks/syscall_check.h>
+#include <trace/hooks/mm.h>
+#endif
 
 /**
  * kfree_const - conditionally free memory
@@ -524,6 +529,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 		if (populate)
 			mm_populate(ret, populate);
 	}
+	trace_android_vh_check_mmap_file(file, prot, flag, ret);
 	return ret;
 }
 
@@ -560,7 +566,11 @@ void *kvmalloc_node(size_t size, gfp_t flags, int node)
 {
 	gfp_t kmalloc_flags = flags;
 	void *ret;
+	bool use_vmalloc = false;
 
+	trace_android_vh_kvmalloc_node_use_vmalloc(size, &kmalloc_flags, &use_vmalloc);
+	if (use_vmalloc)
+		goto use_vmalloc_node;
 	/*
 	 * We want to attempt a large physically contiguous block first because
 	 * it is less likely to fragment multiple larger blocks and therefore
@@ -577,6 +587,7 @@ void *kvmalloc_node(size_t size, gfp_t flags, int node)
 		/* nofail semantic is implemented by the vmalloc fallback */
 		kmalloc_flags &= ~__GFP_NOFAIL;
 	}
+	trace_android_vh_adjust_kvmalloc_flags(get_order(size), &kmalloc_flags);
 
 	ret = kmalloc_node(size, kmalloc_flags, node);
 
@@ -603,6 +614,7 @@ void *kvmalloc_node(size_t size, gfp_t flags, int node)
 	 * about the resulting pointer, and cannot play
 	 * protection games.
 	 */
+use_vmalloc_node:
 	return __vmalloc_node_range(size, 1, VMALLOC_START, VMALLOC_END,
 			flags, PAGE_KERNEL, VM_ALLOW_HUGE_VMAP,
 			node, __builtin_return_address(0));

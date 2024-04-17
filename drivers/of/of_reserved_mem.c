@@ -26,7 +26,7 @@
 
 #include "of_private.h"
 
-#define MAX_RESERVED_REGIONS	64
+#define MAX_RESERVED_REGIONS	128
 static struct reserved_mem reserved_mem[MAX_RESERVED_REGIONS];
 static int reserved_mem_count;
 
@@ -285,6 +285,16 @@ void __init fdt_init_reserved_mem(void)
 				else
 					memblock_phys_free(rmem->base,
 							   rmem->size);
+			} else {
+				phys_addr_t end = rmem->base + rmem->size - 1;
+				bool reusable =
+					(of_get_flat_dt_prop(node, "reusable", NULL)) != NULL;
+
+				pr_info("%pa..%pa ( %lu KB ) %s %s %s\n",
+					&rmem->base, &end, (unsigned long)(rmem->size / SZ_1K),
+					nomap ? "nomap" : "map",
+					reusable ? "reusable" : "non-reusable",
+					rmem->name ? rmem->name : "unknown");
 			}
 		}
 	}

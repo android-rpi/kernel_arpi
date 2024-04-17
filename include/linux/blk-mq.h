@@ -7,6 +7,7 @@
 #include <linux/lockdep.h>
 #include <linux/scatterlist.h>
 #include <linux/prefetch.h>
+#include <linux/android_kabi.h>
 
 struct blk_mq_tags;
 struct blk_flush_queue;
@@ -173,23 +174,19 @@ struct request {
 
 
 	/*
-	 * Three pointers are available for the IO schedulers, if they need
-	 * more they have to dynamically allocate it.  Flush requests are
-	 * never put on the IO scheduler. So let the flush fields share
-	 * space with the elevator data.
+	 * Three pointers are available for IO schedulers. If they need
+	 * more private data they have to allocate it dynamically.
 	 */
-	union {
-		struct {
-			struct io_cq		*icq;
-			void			*priv[2];
-		} elv;
+	struct {
+		struct io_cq		*icq;
+		void			*priv[2];
+	} elv;
 
-		struct {
-			unsigned int		seq;
-			struct list_head	list;
-			rq_end_io_fn		*saved_end_io;
-		} flush;
-	};
+	struct {
+		unsigned int		seq;
+		struct list_head	list;
+		rq_end_io_fn		*saved_end_io;
+	} flush;
 
 	union {
 		struct __call_single_data csd;
@@ -201,6 +198,8 @@ struct request {
 	 */
 	rq_end_io_fn *end_io;
 	void *end_io_data;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 static inline enum req_op req_op(const struct request *req)
@@ -444,6 +443,8 @@ struct blk_mq_hw_ctx {
 	 * q->unused_hctx_list.
 	 */
 	struct list_head	hctx_list;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -527,6 +528,8 @@ struct blk_mq_tag_set {
 
 	struct mutex		tag_list_lock;
 	struct list_head	tag_list;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -657,6 +660,8 @@ struct blk_mq_ops {
 	 */
 	void (*show_rq)(struct seq_file *m, struct request *rq);
 #endif
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 enum {
@@ -745,7 +750,8 @@ struct request *blk_mq_alloc_request_hctx(struct request_queue *q,
 struct blk_mq_tags {
 	unsigned int nr_tags;
 	unsigned int nr_reserved_tags;
-	unsigned int active_queues;
+
+	atomic_t active_queues;
 
 	struct sbitmap_queue bitmap_tags;
 	struct sbitmap_queue breserved_tags;

@@ -22,7 +22,7 @@
 #include "acl.h"
 #include <trace/events/f2fs.h>
 
-static inline int is_extension_exist(const unsigned char *s, const char *sub,
+static inline bool is_extension_exist(const unsigned char *s, const char *sub,
 						bool tmp_ext)
 {
 	size_t slen = strlen(s);
@@ -30,19 +30,19 @@ static inline int is_extension_exist(const unsigned char *s, const char *sub,
 	int i;
 
 	if (sublen == 1 && *sub == '*')
-		return 1;
+		return true;
 
 	/*
 	 * filename format of multimedia file should be defined as:
 	 * "filename + '.' + extension + (optional: '.' + temp extension)".
 	 */
 	if (slen < sublen + 2)
-		return 0;
+		return false;
 
 	if (!tmp_ext) {
 		/* file has no temp extension */
 		if (s[slen - sublen - 1] != '.')
-			return 0;
+			return false;
 		return !strncasecmp(s + slen - sublen, sub, sublen);
 	}
 
@@ -50,10 +50,10 @@ static inline int is_extension_exist(const unsigned char *s, const char *sub,
 		if (s[i] != '.')
 			continue;
 		if (!strncasecmp(s + i + 1, sub, sublen))
-			return 1;
+			return true;
 	}
 
-	return 0;
+	return false;
 }
 
 int f2fs_update_extension_list(struct f2fs_sb_info *sbi, const char *name,
@@ -176,6 +176,32 @@ inherit_comp:
 	}
 }
 
+/*
+ * Set file's temperature for hot/cold data separation
+ */
+static void set_file_temperature(struct f2fs_sb_info *sbi, struct inode *inode,
+		const unsigned char *name)
+{
+	__u8 (*extlist)[F2FS_EXTENSION_LEN] = sbi->raw_super->extension_list;
+	int i, cold_count, hot_count;
+
+	f2fs_down_read(&sbi->sb_lock);
+	cold_count = le32_to_cpu(sbi->raw_super->extension_count);
+	hot_count = sbi->raw_super->hot_ext_count;
+	for (i = 0; i < cold_count + hot_count; i++)
+		if (is_extension_exist(name, extlist[i], true))
+			break;
+	f2fs_up_read(&sbi->sb_lock);
+
+	if (i == cold_count + hot_count)
+		return;
+
+	if (i < cold_count)
+		file_set_cold(inode);
+	else
+		file_set_hot(inode);
+}
+
 static struct inode *f2fs_new_inode(struct user_namespace *mnt_userns,
 						struct inode *dir, umode_t mode,
 						const char *name)
@@ -274,6 +300,9 @@ static struct inode *f2fs_new_inode(struct user_namespace *mnt_userns,
 	if (test_opt(sbi, INLINE_DATA) && f2fs_may_inline_data(inode))
 		set_inode_flag(inode, FI_INLINE_DATA);
 
+	if (name && !test_opt(sbi, DISABLE_EXT_IDENTIFY))
+		set_file_temperature(sbi, inode, name);
+
 	stat_inc_inline_xattr(inode);
 	stat_inc_inline_inode(inode);
 	stat_inc_inline_dir(inode);
@@ -304,36 +333,6 @@ fail_drop:
 	return ERR_PTR(err);
 }
 
-/*
- * Set file's temperature for hot/cold data separation
- */
-static inline void set_file_temperature(struct f2fs_sb_info *sbi, struct inode *inode,
-		const unsigned char *name)
-{
-	__u8 (*extlist)[F2FS_EXTENSION_LEN] = sbi->raw_super->extension_list;
-	int i, cold_count, hot_count;
-
-	f2fs_down_read(&sbi->sb_lock);
-
-	cold_count = le32_to_cpu(sbi->raw_super->extension_count);
-	hot_count = sbi->raw_super->hot_ext_count;
-
-	for (i = 0; i < cold_count + hot_count; i++) {
-		if (is_extension_exist(name, extlist[i], true))
-			break;
-	}
-
-	f2fs_up_read(&sbi->sb_lock);
-
-	if (i == cold_count + hot_count)
-		return;
-
-	if (i < cold_count)
-		file_set_cold(inode);
-	else
-		file_set_hot(inode);
-}
-
 static int f2fs_create(struct user_namespace *mnt_userns, struct inode *dir,
 		       struct dentry *dentry, umode_t mode, bool excl)
 {
@@ -354,9 +353,6 @@ static int f2fs_create(struct user_namespace *mnt_userns, struct inode *dir,
 	inode = f2fs_new_inode(mnt_userns, dir, mode, dentry->d_name.name);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
-
-	if (!test_opt(sbi, DISABLE_EXT_IDENTIFY))
-		set_file_temperature(sbi, inode, dentry->d_name.name);
 
 	inode->i_op = &f2fs_file_inode_operations;
 	inode->i_fop = &f2fs_file_operations;
@@ -629,6 +625,8 @@ static int f2fs_unlink(struct inode *dir, struct dentry *dentry)
 		goto fail;
 	}
 	f2fs_delete_entry(de, page, dir, inode);
+	f2fs_unlock_op(sbi);
+
 #if IS_ENABLED(CONFIG_UNICODE)
 	/* VFS negative dentries are incompatible with Encoding and
 	 * Case-insensitiveness. Eventually we'll want avoid
@@ -639,8 +637,6 @@ static int f2fs_unlink(struct inode *dir, struct dentry *dentry)
 	if (IS_CASEFOLDED(dir))
 		d_invalidate(dentry);
 #endif
-	f2fs_unlock_op(sbi);
-
 	if (IS_DIRSYNC(dir))
 		f2fs_sync_fs(sbi->sb, 1);
 fail:
@@ -930,9 +926,6 @@ static int f2fs_tmpfile(struct user_namespace *mnt_userns, struct inode *dir,
 static int f2fs_create_whiteout(struct user_namespace *mnt_userns,
 				struct inode *dir, struct inode **whiteout)
 {
-	if (unlikely(f2fs_cp_error(F2FS_I_SB(dir))))
-		return -EIO;
-
 	return __f2fs_tmpfile(mnt_userns, dir, NULL,
 				S_IFCHR | WHITEOUT_MODE, true, whiteout);
 }
@@ -970,7 +963,7 @@ static int f2fs_rename(struct user_namespace *mnt_userns, struct inode *old_dir,
 
 	/*
 	 * If new_inode is null, the below renaming flow will
-	 * add a link in old_dir which can conver inline_dir.
+	 * add a link in old_dir which can convert inline_dir.
 	 * After then, if we failed to get the entry due to other
 	 * reasons like ENOMEM, we had to remove the new entry.
 	 * Instead of adding such the error handling routine, let's

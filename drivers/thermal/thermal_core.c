@@ -23,6 +23,8 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/thermal.h>
 
 #include "thermal_core.h"
 #include "thermal_hwmon.h"
@@ -481,6 +483,8 @@ void thermal_zone_device_update(struct thermal_zone_device *tz,
 		handle_thermal_trip(tz, count);
 
 	monitor_thermal_zone(tz);
+
+	trace_android_vh_get_thermal_zone_device(tz);
 out:
 	mutex_unlock(&tz->lock);
 }
@@ -1450,6 +1454,7 @@ static int thermal_pm_notify(struct notifier_block *nb,
 			     unsigned long mode, void *_unused)
 {
 	struct thermal_zone_device *tz;
+	int irq_wakeable = 0;
 
 	switch (mode) {
 	case PM_HIBERNATION_PREPARE:
@@ -1462,6 +1467,11 @@ static int thermal_pm_notify(struct notifier_block *nb,
 	case PM_POST_SUSPEND:
 		atomic_set(&in_suspend, 0);
 		list_for_each_entry(tz, &thermal_tz_list, node) {
+
+			trace_android_vh_thermal_pm_notify_suspend(tz, &irq_wakeable);
+			if (irq_wakeable)
+				continue;
+
 			thermal_zone_device_init(tz);
 			thermal_zone_device_update(tz,
 						   THERMAL_EVENT_UNSPECIFIED);

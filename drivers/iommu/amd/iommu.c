@@ -2056,13 +2056,9 @@ static struct protection_domain *protection_domain_alloc(unsigned int type)
 {
 	struct io_pgtable_ops *pgtbl_ops;
 	struct protection_domain *domain;
-	int pgtable = amd_iommu_pgtable;
+	int pgtable;
 	int mode = DEFAULT_PGTABLE_LEVEL;
 	int ret;
-
-	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
-	if (!domain)
-		return NULL;
 
 	/*
 	 * Force IOMMU v1 page table when iommu=pt and
@@ -2073,7 +2069,15 @@ static struct protection_domain *protection_domain_alloc(unsigned int type)
 		mode = PAGE_MODE_NONE;
 	} else if (type == IOMMU_DOMAIN_UNMANAGED) {
 		pgtable = AMD_IOMMU_V1;
+	} else if (type == IOMMU_DOMAIN_DMA || type == IOMMU_DOMAIN_DMA_FQ) {
+		pgtable = amd_iommu_pgtable;
+	} else {
+		return NULL;
 	}
+
+	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+	if (!domain)
+		return NULL;
 
 	switch (pgtable) {
 	case AMD_IOMMU_V1:

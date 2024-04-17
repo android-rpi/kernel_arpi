@@ -20,6 +20,7 @@
 #include <linux/seqlock.h>
 #include <linux/timer.h>
 #include <linux/timerqueue.h>
+#include <linux/android_kabi.h>
 
 struct hrtimer_clock_base;
 struct hrtimer_cpu_base;
@@ -124,6 +125,8 @@ struct hrtimer {
 	u8				is_rel;
 	u8				is_soft;
 	u8				is_hard;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -531,9 +534,9 @@ extern void sysrq_timer_list_show(void);
 
 int hrtimers_prepare_cpu(unsigned int cpu);
 #ifdef CONFIG_HOTPLUG_CPU
-int hrtimers_cpu_dying(unsigned int cpu);
+int hrtimers_dead_cpu(unsigned int cpu);
 #else
-#define hrtimers_cpu_dying	NULL
+#define hrtimers_dead_cpu	NULL
 #endif
 
 #endif

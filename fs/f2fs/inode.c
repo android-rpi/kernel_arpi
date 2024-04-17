@@ -256,7 +256,7 @@ static bool sanity_check_inode(struct inode *inode, struct page *node_page)
 		(!fi->i_inline_xattr_size ||
 		fi->i_inline_xattr_size > MAX_INLINE_XATTR_SIZE)) {
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
-		f2fs_warn(sbi, "%s: inode (ino=%lx) has corrupted i_inline_xattr_size: %d, max: %zu",
+		f2fs_warn(sbi, "%s: inode (ino=%lx) has corrupted i_inline_xattr_size: %d, max: %lu",
 			  __func__, inode->i_ino, fi->i_inline_xattr_size,
 			  MAX_INLINE_XATTR_SIZE);
 		return false;
@@ -326,7 +326,6 @@ static void init_idisk_time(struct inode *inode)
 	fi->i_disk_time[0] = inode->i_atime;
 	fi->i_disk_time[1] = inode->i_ctime;
 	fi->i_disk_time[2] = inode->i_mtime;
-	fi->i_disk_time[3] = fi->i_crtime;
 }
 
 static int do_read_inode(struct inode *inode)
@@ -470,6 +469,7 @@ static int do_read_inode(struct inode *inode)
 
 	/* Need all the flag bits */
 	f2fs_init_read_extent_tree(inode, node_page);
+	f2fs_init_age_extent_tree(inode);
 
 	if (!sanity_check_extent_cache(inode)) {
 		f2fs_put_page(node_page, 1);
@@ -816,10 +816,8 @@ retry:
 	if (F2FS_HAS_BLOCKS(inode))
 		err = f2fs_truncate(inode);
 
-	if (time_to_inject(sbi, FAULT_EVICT_INODE)) {
-		f2fs_show_injection_info(sbi, FAULT_EVICT_INODE);
+	if (time_to_inject(sbi, FAULT_EVICT_INODE))
 		err = -EIO;
-	}
 
 	if (!err) {
 		f2fs_lock_op(sbi);

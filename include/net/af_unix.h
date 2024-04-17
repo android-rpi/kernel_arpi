@@ -71,7 +71,6 @@ static inline struct unix_sock *unix_sk(const struct sock *sk)
 {
 	return (struct unix_sock *)sk;
 }
-#define unix_peer(sk) (unix_sk(sk)->peer)
 
 #define unix_state_lock(s)	spin_lock(&unix_sk(s)->lock)
 #define unix_state_unlock(s)	spin_unlock(&unix_sk(s)->lock)

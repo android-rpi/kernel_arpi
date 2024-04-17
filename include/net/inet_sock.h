@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #include <linux/jhash.h>
 #include <linux/netdevice.h>
+#include <linux/android_kabi.h>
 
 #include <net/flow.h>
 #include <net/sock.h>
@@ -222,8 +223,8 @@ struct inet_sock {
 	__s16			uc_ttl;
 	__u16			cmsg_flags;
 	struct ip_options_rcu __rcu	*inet_opt;
-	atomic_t		inet_id;
 	__be16			inet_sport;
+	__u16			inet_id;
 
 	__u8			tos;
 	__u8			min_ttl;
@@ -254,6 +255,9 @@ struct inet_sock {
 		__u16 lo;
 		__u16 hi;
 	}			local_port_range;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 #define IPCORK_OPT	1	/* ip-options has been held in ipcork.opt */

@@ -366,8 +366,6 @@ struct trace_array {
 	struct list_head	events;
 	struct trace_event_file *trace_marker_file;
 	cpumask_var_t		tracing_cpumask; /* only trace on set CPUs */
-	/* one per_cpu trace_pipe can be opened by only one user */
-	cpumask_var_t		pipe_cpumask;
 	int			ref;
 	int			trace_ref;
 #ifdef CONFIG_FUNCTION_TRACER
@@ -1631,9 +1629,6 @@ extern void event_trigger_unregister(struct event_command *cmd_ops,
 				     struct trace_event_file *file,
 				     char *glob,
 				     struct event_trigger_data *trigger_data);
-
-extern void event_file_get(struct trace_event_file *file);
-extern void event_file_put(struct trace_event_file *file);
 
 /**
  * struct event_trigger_ops - callbacks for trace event triggers

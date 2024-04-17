@@ -10,6 +10,8 @@
 #include "ufs-sysfs.h"
 #include "ufshcd-priv.h"
 
+#include <trace/hooks/ufshcd.h>
+
 static const char *ufshcd_uic_link_state_to_string(
 			enum uic_link_state state)
 {
@@ -1234,8 +1236,7 @@ static ssize_t _pname##_show(struct device *dev,			\
 	struct scsi_device *sdev = to_scsi_device(dev);			\
 	struct ufs_hba *hba = shost_priv(sdev->host);			\
 	u8 lun = ufshcd_scsi_to_upiu_lun(sdev->lun);			\
-	if (!ufs_is_valid_unit_desc_lun(&hba->dev_info, lun,		\
-				_duname##_DESC_PARAM##_puname))		\
+	if (!ufs_is_valid_unit_desc_lun(&hba->dev_info, lun))		\
 		return -EINVAL;						\
 	return ufs_sysfs_read_desc_param(hba, QUERY_DESC_IDN_##_duname,	\
 		lun, _duname##_DESC_PARAM##_puname, buf, _size);	\
@@ -1286,9 +1287,27 @@ static struct attribute *ufs_sysfs_unit_descriptor[] = {
 	NULL,
 };
 
+static umode_t ufs_unit_descriptor_is_visible(struct kobject *kobj, struct attribute *attr, int n)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct scsi_device *sdev = to_scsi_device(dev);
+	u8 lun = ufshcd_scsi_to_upiu_lun(sdev->lun);
+	umode_t mode = attr->mode;
+
+	if (lun == UFS_UPIU_BOOT_WLUN || lun == UFS_UPIU_UFS_DEVICE_WLUN)
+		/* Boot and device WLUN have no unit descriptors */
+		mode = 0;
+	if (lun == UFS_UPIU_RPMB_WLUN && attr == &dev_attr_wb_buf_alloc_units.attr)
+		mode = 0;
+
+	return mode;
+}
+
+
 const struct attribute_group ufs_sysfs_unit_descriptor_group = {
 	.name = "unit_descriptor",
 	.attrs = ufs_sysfs_unit_descriptor,
+	.is_visible = ufs_unit_descriptor_is_visible,
 };
 
 static ssize_t dyn_cap_needed_attribute_show(struct device *dev,
@@ -1337,10 +1356,12 @@ void ufs_sysfs_add_nodes(struct device *dev)
 	int ret;
 
 	ret = sysfs_create_groups(&dev->kobj, ufs_sysfs_groups);
-	if (ret)
+	if (ret) {
 		dev_err(dev,
 			"%s: sysfs groups creation failed (err = %d)\n",
 			__func__, ret);
+		return;
+	}
 }
 
 void ufs_sysfs_remove_nodes(struct device *dev)
